@@ -1,0 +1,49 @@
+# CMake build trees
+/build/
+/build-*/
+/cmake-build-*/
+
+# Generic build output
+/out/
+/bin/
+/lib/
+/install/
+
+# CMake-generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+install_manifest.txt
+Makefile
+
+# Qt autogen output
+.qt/
+*_autogen/
+
+# Visual Studio / MSBuild
+.vs/
+*.sln
+*.slnx
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.VC.opendb
+*.opendb
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.dir/
+x64/
+Debug/
+Release/
+RelWithDebInfo/
+MinSizeRel/
+ipch/
+
+# Editor settings
+.idea/
+.vscode/

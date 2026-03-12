@@ -1,8 +1,21 @@
-add_library(vsgocct STATIC
+set(VSGOCCT_SOURCES
     StepModelLoader.cpp
     cad/StepReader.cpp
     mesh/ShapeMesher.cpp
     scene/SceneBuilder.cpp
+)
+
+set(VSGOCCT_HEADERS
+    ../../include/vsgocct/StepModelLoader.h
+    ../../include/vsgocct/StepSceneData.h
+    ../../include/vsgocct/cad/StepReader.h
+    ../../include/vsgocct/mesh/ShapeMesher.h
+    ../../include/vsgocct/scene/SceneBuilder.h
+)
+
+add_library(vsgocct STATIC
+    ${VSGOCCT_SOURCES}
+    ${VSGOCCT_HEADERS}
 )
 
 add_library(vsgocct::vsgocct ALIAS vsgocct)
@@ -29,3 +42,10 @@ target_link_libraries(vsgocct
 )
 
 target_compile_features(vsgocct PUBLIC cxx_std_17)
+
+source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" PREFIX "Source Files" FILES ${VSGOCCT_SOURCES})
+source_group(
+    TREE "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+    PREFIX "Header Files"
+    FILES ${VSGOCCT_HEADERS}
+)

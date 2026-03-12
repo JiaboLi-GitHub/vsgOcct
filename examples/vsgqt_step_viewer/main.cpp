@@ -1,5 +1,6 @@
 ﻿#include <vsgocct/StepModelLoader.h>
 
+#include <QtGui/QAction>
 #include <QtCore/QFileInfo>
 #include <QtCore/QStringList>
 #include <QtWidgets/QApplication>
@@ -7,6 +8,7 @@
 #include <QtWidgets/QMainWindow>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QStatusBar>
+#include <QtWidgets/QToolBar>
 #include <QtWidgets/QWidget>
 
 #include <vsgQt/Viewer.h>
@@ -105,9 +107,11 @@ int main(int argc, char* argv[])
             return 0;
         }
 
-        // 加载 STEP 模型并转换为 VSG 场景，同时输出三角形数量供终端调试。
+        // 加载 STEP 模型并转换为 VSG 场景，同时输出点线面统计供终端调试。
         auto sceneData = vsgocct::loadStepScene(std::filesystem::path(stepFile.toStdWString()));
-        std::cout << "Loaded " << sceneData.triangleCount << " triangles from "
+        std::cout << "Loaded " << sceneData.pointCount << " points, "
+                  << sceneData.lineSegmentCount << " line segments, "
+                  << sceneData.triangleCount << " triangles from "
                   << stepFile.toLocal8Bit().constData() << std::endl;
 
         auto viewer = vsgQt::Viewer::create();
@@ -127,8 +131,47 @@ int main(int argc, char* argv[])
         mainWindow.setWindowTitle(QStringLiteral("STEP Viewer - %1").arg(QFileInfo(stepFile).fileName()));
         mainWindow.setCentralWidget(container);
         mainWindow.resize(static_cast<int>(traits->width), static_cast<int>(traits->height));
-        mainWindow.statusBar()->showMessage(
-            QStringLiteral("Triangles: %1").arg(static_cast<qulonglong>(sceneData.triangleCount)));
+
+        // 工具栏上的三个开关分别直连到底层 StepSceneData 的三个 Switch。
+        // 这样示例层不需要了解场景树内部结构，只负责把 UI 状态同步给渲染层。
+        auto* primitiveToolBar = mainWindow.addToolBar(QStringLiteral("Primitives"));
+        primitiveToolBar->setMovable(false);
+
+        auto* pointsAction = primitiveToolBar->addAction(QStringLiteral("Points"));
+        pointsAction->setCheckable(true);
+        pointsAction->setChecked(sceneData.pointsVisible());
+        // 如果模型里没有点拓扑，就把按钮禁用，避免用户误以为切换失效。
+        pointsAction->setEnabled(sceneData.pointCount > 0);
+        QObject::connect(pointsAction, &QAction::toggled, &mainWindow, [&sceneData](bool visible)
+        {
+            sceneData.setPointsVisible(visible);
+        });
+
+        auto* linesAction = primitiveToolBar->addAction(QStringLiteral("Lines"));
+        linesAction->setCheckable(true);
+        linesAction->setChecked(sceneData.linesVisible());
+        // 线段数量来自 Edge 提取后的逻辑统计，不依赖具体 GPU 缓冲展开方式。
+        linesAction->setEnabled(sceneData.lineSegmentCount > 0);
+        QObject::connect(linesAction, &QAction::toggled, &mainWindow, [&sceneData](bool visible)
+        {
+            sceneData.setLinesVisible(visible);
+        });
+
+        auto* facesAction = primitiveToolBar->addAction(QStringLiteral("Faces"));
+        facesAction->setCheckable(true);
+        facesAction->setChecked(sceneData.facesVisible());
+        // 面是三角化结果，因此这里用 triangleCount 判断按钮是否可用。
+        facesAction->setEnabled(sceneData.triangleCount > 0);
+        QObject::connect(facesAction, &QAction::toggled, &mainWindow, [&sceneData](bool visible)
+        {
+            sceneData.setFacesVisible(visible);
+        });
+
+        // 状态栏同时展示三类 primitive 的数量，便于快速确认模型当前提取了哪些拓扑信息。
+        mainWindow.statusBar()->showMessage(QStringLiteral("Points: %1 | Line Segments: %2 | Triangles: %3")
+                                                .arg(static_cast<qulonglong>(sceneData.pointCount))
+                                                .arg(static_cast<qulonglong>(sceneData.lineSegmentCount))
+                                                .arg(static_cast<qulonglong>(sceneData.triangleCount)));
 
         // 持续重绘适合交互式三维查看器；16ms 间隔约等于 60 FPS 刷新节奏。
         viewer->continuousUpdate = true;

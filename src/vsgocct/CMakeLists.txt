@@ -1,6 +1,8 @@
 add_library(vsgocct STATIC
     StepModelLoader.cpp
     cad/StepReader.cpp
+    mesh/ShapeMesher.cpp
+    scene/SceneBuilder.cpp
 )
 
 add_library(vsgocct::vsgocct ALIAS vsgocct)

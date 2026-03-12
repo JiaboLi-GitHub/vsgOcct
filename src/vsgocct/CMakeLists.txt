@@ -1,5 +1,6 @@
 add_library(vsgocct STATIC
     StepModelLoader.cpp
+    cad/StepReader.cpp
 )
 
 add_library(vsgocct::vsgocct ALIAS vsgocct)
@@ -13,7 +14,6 @@ set_target_properties(vsgocct PROPERTIES
 target_include_directories(vsgocct
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/../../include
-    PRIVATE
         ${OpenCASCADE_INCLUDE_DIR}
 )
 

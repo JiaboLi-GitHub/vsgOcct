@@ -20,6 +20,8 @@
 | Options | 同步引入 | 避免二次破坏 API |
 | `StepSceneData` 位置 | 独立头文件 `StepSceneData.h` | 避免 scene 模块反向依赖 facade 头文件 |
 | `InParallel` 参数 | 内部硬编码为 `true`，不暴露 | 当前无需用户控制，后续按需加入 `MeshOptions` |
+| OCCT include 路径 | 改为 PUBLIC | `StepReader.h` 和 `ShapeMesher.h` 暴露 `TopoDS_Shape`，下游必须能找到 OCCT 头文件 |
+| OCCT `occ::handle` | 无需特殊处理 | 来自 OCCT 自身头文件的类型别名（`opencascade::handle`），随 OCCT includes 自动可用 |
 
 ## 文件结构
 
@@ -141,7 +143,10 @@ struct MeshResult
     vsg::dvec3 boundsMin;
     vsg::dvec3 boundsMax;
 
-    bool hasGeometry() const;
+    bool hasGeometry() const
+    {
+        return pointCount > 0 || lineSegmentCount > 0 || triangleCount > 0;
+    }
 };
 
 MeshResult triangulate(const TopoDS_Shape& shape,
@@ -203,7 +208,7 @@ StepSceneData buildScene(const mesh::MeshResult& meshResult,
 - 编译内嵌 GLSL 450 shader
 - 将 CPU 侧几何数据上传为 VSG 节点
 - 每类 primitive 包进独立的 vsg::Switch
-- 根据 SceneOptions 设置初始显隐状态
+- 根据 SceneOptions 设置初始显隐状态：`false` 时对应 Switch 的 child mask 设为 `vsg::MASK_OFF`（等同于 `createPrimitiveSwitch` 时传入 `false`）
 - 从 `MeshResult::boundsMin/boundsMax` 计算 `center` 和 `radius`
 - 从 `MeshResult` 填充 `pointCount`、`lineSegmentCount`、`triangleCount`
 
@@ -266,6 +271,7 @@ StepSceneData loadStepScene(const std::filesystem::path& stepFile)
 | `BoundsAccumulator` | `mesh/ShapeMesher.cpp` | 内部 |
 | `PointBuffers/LineBuffers/FaceBuffers/SceneBuffers` | `mesh/ShapeMesher.cpp` | 内部 |
 | `IndexedShapeMap` 类型别名 | `mesh/ShapeMesher.cpp` | 内部 |
+| `LineBuffers::segmentCount` | `mesh/ShapeMesher.cpp` -> `MeshResult::lineSegmentCount` | 字段重命名 |
 | `toVec3(gp_Pnt)`, `toVec3(gp_Vec)`, `updateBounds()` | `mesh/ShapeMesher.cpp` | 内部 |
 | 6 个 GLSL shader 字符串 | `scene/SceneBuilder.cpp` | 内部 |
 | `createPrimitivePipeline()` | `scene/SceneBuilder.cpp` | 内部 |
@@ -289,7 +295,10 @@ add_library(vsgocct STATIC
 )
 ```
 
-其余部分（alias、target properties、include dirs、link libs、compile features）保持不变。
+其余变更：
+
+- `OpenCASCADE_INCLUDE_DIR` 从 `PRIVATE` 改为 `PUBLIC`（因为 `StepReader.h` 和 `ShapeMesher.h` 暴露了 `TopoDS_Shape`）
+- alias、target properties、link libs、compile features 保持不变
 
 ## 影响范围
 
@@ -313,3 +322,4 @@ add_library(vsgocct STATIC
 3. 新的分层 API（`cad::readStep` -> `mesh::triangulate` -> `scene::buildScene`）可独立调用
 4. `loadStepScene()` facade 继续正常工作
 5. `StepSceneData` 可通过 `#include <vsgocct/StepSceneData.h>` 或 `#include <vsgocct/StepModelLoader.h>` 使用
+6. 分层 API 验证方式：在 `StepModelLoader.cpp` 的 `loadStepScene()` 中逐步调用三个模块即为验证——如果编译通过且示例行为一致，说明分层 API 可独立调用

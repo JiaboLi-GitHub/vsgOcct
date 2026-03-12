@@ -9,6 +9,7 @@
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QStatusBar>
 #include <QtWidgets/QToolBar>
+#include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QWidget>
 
 #include <vsgQt/Viewer.h>
@@ -125,11 +126,20 @@ int main(int argc, char* argv[])
         // 用标准 QMainWindow 承载渲染窗口，这样后续很容易继续扩展菜单栏、工具栏和状态栏。
         QMainWindow mainWindow;
         auto* renderWindow = createRenderWindow(viewer, traits, sceneData);
-        auto* container = QWidget::createWindowContainer(renderWindow, &mainWindow);
+
+        // 创建一个中间件 Widget，用 QVBoxLayout 管理渲染容器，
+        // 避免原生 Vulkan 窗口的 Z-order 遮挡工具栏。
+        auto* centralBase = new QWidget(&mainWindow);
+        auto* layout = new QVBoxLayout(centralBase);
+        layout->setContentsMargins(0, 36, 0, 8);
+        layout->setSpacing(0);
+
+        auto* container = QWidget::createWindowContainer(renderWindow);
         container->setFocusPolicy(Qt::StrongFocus);
+        layout->addWidget(container);
 
         mainWindow.setWindowTitle(QStringLiteral("STEP Viewer - %1").arg(QFileInfo(stepFile).fileName()));
-        mainWindow.setCentralWidget(container);
+        mainWindow.setCentralWidget(centralBase);
         mainWindow.resize(static_cast<int>(traits->width), static_cast<int>(traits->height));
 
         // 工具栏上的三个开关分别直连到底层 StepSceneData 的三个 Switch。

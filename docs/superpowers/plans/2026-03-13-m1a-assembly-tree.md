@@ -58,6 +58,7 @@ target_link_libraries(vsgocct
     PUBLIC
         vsg::vsg
     PRIVATE
+        TKDESTEP
         TKXDESTEP
         TKLCAF
         TKXCAF
@@ -66,7 +67,7 @@ target_link_libraries(vsgocct
 )
 ```
 
-Note: `TKDESTEP` is removed because `TKXDESTEP` depends on it internally. `TKLCAF` provides `TDocStd_Document`; `TKXCAF` provides `XCAFDoc_ShapeTool` and `XCAFDoc_ColorTool`.
+Note: `TKDESTEP` is kept alongside `TKXDESTEP` because CMake's OCCT config may not always declare transitive dependencies correctly. `TKLCAF` provides `TDocStd_Document`; `TKXCAF` provides `XCAFDoc_ShapeTool` and `XCAFDoc_ColorTool`.
 
 - [ ] **Step 2: Verify build still compiles**
 
@@ -173,6 +174,7 @@ Replace the entire content of `src/vsgocct/cad/StepReader.cpp`:
 #include <XCAFDoc_ShapeTool.hxx>
 
 #include <Quantity_Color.hxx>
+#include <TCollection_AsciiString.hxx>
 
 #include <fstream>
 #include <iostream>
@@ -188,8 +190,11 @@ std::string readLabelName(const TDF_Label& label)
     Handle(TDataStd_Name) nameAttr;
     if (label.FindAttribute(TDataStd_Name::GetID(), nameAttr))
     {
-        return std::string(nameAttr->Get().ToExtString(),
-                           nameAttr->Get().ToExtString() + nameAttr->Get().Length());
+        // Convert from TCollection_ExtendedString (UTF-16) to ASCII.
+        // TCollection_AsciiString handles Latin characters; non-Latin chars
+        // become '?' but this is acceptable for M1a scope.
+        TCollection_AsciiString ascii(nameAttr->Get());
+        return std::string(ascii.ToCString());
     }
     return {};
 }
@@ -641,8 +646,26 @@ TEST(StepReader, PlainAssemblyBackwardCompat)
 {
     auto assembly = readStep(testDataPath("assembly.step"));
     ASSERT_FALSE(assembly.roots.empty());
-    // Plain compound should still produce valid tree nodes
-    // (may be Assembly with Part children, or multiple Part roots)
+
+    // Plain compound should still produce valid tree with at least one Part
+    std::size_t partCount = 0;
+    std::function<void(const ShapeNode&)> countParts = [&](const ShapeNode& n)
+    {
+        if (n.type == ShapeNodeType::Part)
+        {
+            ++partCount;
+            EXPECT_FALSE(n.shape.IsNull());
+        }
+        for (const auto& child : n.children)
+        {
+            countParts(child);
+        }
+    };
+    for (const auto& root : assembly.roots)
+    {
+        countParts(root);
+    }
+    EXPECT_GE(partCount, 1u);
 }
 
 // --- Colored XCAF STEP ---
@@ -669,6 +692,8 @@ TEST(StepReader, ColoredBoxHasName)
 
     const auto& root = assembly.roots.front();
     EXPECT_FALSE(root.name.empty());
+    // Name was set to "RedBox" in generate_test_data
+    EXPECT_NE(root.name.find("Box"), std::string::npos);
 }
 
 // --- Nested XCAF assembly ---

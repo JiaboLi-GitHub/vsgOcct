@@ -7,7 +7,6 @@ set(VSGOCCT_SOURCES
 
 set(VSGOCCT_HEADERS
     ../../include/vsgocct/StepModelLoader.h
-    ../../include/vsgocct/StepSceneData.h
     ../../include/vsgocct/cad/StepReader.h
     ../../include/vsgocct/mesh/ShapeMesher.h
     ../../include/vsgocct/scene/SceneBuilder.h
@@ -37,6 +36,9 @@ target_link_libraries(vsgocct
         vsg::vsg
     PRIVATE
         TKDESTEP
+        TKXDESTEP
+        TKLCAF
+        TKXCAF
         TKMesh
         TKTopAlgo
 )

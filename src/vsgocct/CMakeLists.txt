@@ -36,7 +36,6 @@ target_link_libraries(vsgocct
         vsg::vsg
     PRIVATE
         TKDESTEP
-        TKXDESTEP
         TKLCAF
         TKXCAF
         TKMesh

@@ -1,7 +1,7 @@
 #include <vsgocct/cad/StepReader.h>
 
 #include <STEPCAFControl_Reader.hxx>
-#include <TDF_LabelSequence.hxx>
+#include <NCollection_Sequence.hxx>
 #include <TDataStd_Name.hxx>
 #include <TDocStd_Document.hxx>
 #include <XCAFDoc_ColorTool.hxx>
@@ -93,7 +93,7 @@ ShapeNode buildShapeNode(const TDF_Label& label,
     if (shapeTool->IsAssembly(resolvedLabel))
     {
         node.type = ShapeNodeType::Assembly;
-        TDF_LabelSequence components;
+        NCollection_Sequence<TDF_Label> components;
         shapeTool->GetComponents(resolvedLabel, components);
         for (Standard_Integer i = 1; i <= components.Length(); ++i)
         {
@@ -166,7 +166,7 @@ AssemblyData readStep(const std::filesystem::path& stepFile, const ReaderOptions
     auto shapeTool = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
     auto colorTool = XCAFDoc_DocumentTool::ColorTool(doc->Main());
 
-    TDF_LabelSequence freeLabels;
+    NCollection_Sequence<TDF_Label> freeLabels;
     shapeTool->GetFreeShapes(freeLabels);
 
     AssemblyData assembly;

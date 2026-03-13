@@ -48,7 +48,7 @@ struct ShapeNode
     ShapeNodeColor color;                      // From XCAFDoc_ColorTool (surface color)
     TopoDS_Shape shape;                        // Part nodes hold geometry; Assembly is empty
     TopLoc_Location location;                  // Transform relative to parent
-    std::vector<ShapeNode> children;           // Children for Assembly/Reference nodes
+    std::vector<ShapeNode> children;           // Children for Assembly nodes
 };
 }
 ```
@@ -234,7 +234,7 @@ buildAssemblyScene(assembly):
 buildNodeSubgraph(shapeNode, parentGroup, accumulatedLocation):
   currentLocation = accumulatedLocation * shapeNode.location
 
-  if Assembly or Reference:
+  if Assembly:
     group = vsg::Group::create()
     for each child in shapeNode.children:
       buildNodeSubgraph(child, group, currentLocation)

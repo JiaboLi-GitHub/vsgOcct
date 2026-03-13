@@ -32,7 +32,6 @@ namespace vsgocct::cad
 enum class ShapeNodeType
 {
     Assembly,    // Has children, no geometry
-    Reference,   // References another shape with location (XCAF component)
     Part         // Leaf node, holds actual TopoDS_Shape
 };
 
@@ -55,8 +54,9 @@ struct ShapeNode
 ```
 
 Design decisions:
-- Value semantics (`std::vector<ShapeNode>`) — tree owned recursively
-- `TopLoc_Location` retained because mesh module needs it for triangle transforms
+- Only two node types: `Assembly` (has children) and `Part` (has shape). XCAF's "Reference" concept is an implementation detail — references are resolved during tree construction, not exposed in the public API.
+- Value semantics (`std::vector<ShapeNode>`) — tree owned recursively. For large assemblies (1000+ parts) this may need optimization (e.g., flat vector with parent indices); acceptable for M1a scope.
+- `TopLoc_Location` retained because mesh module needs it for triangle transforms. Stores the **relative** transform from parent; the scene builder composes absolute locations during traversal.
 - Color reads `XCAFDoc_ColorSurf` only (most common in STEP)
 - No ShapeId — deferred to M1b
 
@@ -114,7 +114,9 @@ AssemblyData readStep(const std::filesystem::path& stepFile,
 ```
 readStep(path):
   1. STEPCAFControl_Reader reader
-  2. reader.ReadFile(path)  — or ReadStream for consistency
+  2. Open file as std::ifstream, call reader.ReadStream(name, stream)
+     — Use ReadStream (not ReadFile) for Unicode path safety,
+       consistent with current STEPControl_Reader implementation
   3. Handle(TDocStd_Document) doc = new TDocStd_Document("XDE")
   4. reader.Transfer(doc)
   5. shapeTool = XCAFDoc_DocumentTool::ShapeTool(doc->Main())
@@ -123,35 +125,53 @@ readStep(path):
   8. shapeTool->GetFreeShapes(freeLabels)
   9. For each freeLabel: roots.push_back(buildShapeNode(label, shapeTool, colorTool))
   10. Return AssemblyData{roots}
-     — TDocStd_Document released after return
+      — TDocStd_Document released after return
 ```
 
 ### buildShapeNode() Recursion
 
+XCAF assembly structure: `GetFreeShapes` returns top-level labels. Each label may be an assembly, a reference (component), or a simple shape. Components obtained via `GetComponents()` are references — they carry a `TopLoc_Location` and point to a prototype label via `GetReferredShape()`. The prototype may itself be an assembly (nested) or a simple shape (leaf).
+
+The traversal resolves references transparently — the `Reference` concept is not exposed in the output `ShapeNode` tree. A reference is resolved by extracting its location and recursing into its referred prototype label.
+
 ```
-buildShapeNode(label, shapeTool, colorTool):
+buildShapeNode(label, shapeTool, colorTool, parentColor):
   node.name = read TDataStd_Name from label (empty string if absent)
-  node.color = read XCAFDoc_ColorSurf from colorTool (isSet=false if absent)
-  node.location = IsComponent? label's location : identity
+  node.color = read XCAFDoc_ColorSurf from colorTool
 
-  if shapeTool->IsAssembly(label):
-    node.type = Assembly
-    GetComponents(label, components)
-    for each comp in components:
-      node.children.push_back(buildShapeNode(comp, ...))
+  — Color inheritance: if color not set on this label, inherit parentColor
+  if !node.color.isSet and parentColor.isSet:
+    node.color = parentColor
 
-  elif shapeTool->IsReference(label):
-    node.type = Reference
+  — Resolve references: if this label is a reference (component),
+  — extract its location and recurse into the referred prototype
+  resolvedLabel = label
+  if shapeTool->IsReference(label):
+    node.location = IsComponent? label's XCAFDoc_Location : identity
     GetReferredShape(label, refLabel)
-    — recurse into refLabel to get children/shape
-    — copy referred node's children or shape into this node
+    resolvedLabel = refLabel
+    — re-read name from refLabel if node.name is empty
+    — re-read color from refLabel if node.color is not set
+
+  — Now process the resolved label (prototype)
+  if shapeTool->IsAssembly(resolvedLabel):
+    node.type = Assembly
+    GetComponents(resolvedLabel, components)
+    for each comp in components:
+      node.children.push_back(buildShapeNode(comp, shapeTool, colorTool, node.color))
 
   else (IsSimpleShape):
     node.type = Part
-    node.shape = shapeTool->GetShape(label)
+    node.shape = shapeTool->GetShape(resolvedLabel)
 
   return node
 ```
+
+### Error Handling
+
+- File-level errors (file not found, invalid STEP format): throw `std::runtime_error`, same as current behavior.
+- Part-level errors (null shape, tessellation failure for one part): **skip the bad part** and continue building the rest of the tree. Log a warning to stderr. This is more practical for real-world STEP files which often contain minor issues.
+- If the entire document has zero valid parts after traversal: throw `std::runtime_error`.
 
 ### OCCT Dependency Changes
 
@@ -185,6 +205,15 @@ AssemblySceneData buildAssemblyScene(
 ```
 
 Replaces `buildScene(const mesh::MeshResult&, const SceneOptions&)`.
+
+`SceneOptions` is simplified — the per-primitive-type visibility flags (`pointsVisible`, `linesVisible`, `facesVisible`) are removed. Visibility is now per-part via `PartSceneNode.switchNode`. If per-primitive-type global toggles are needed in the future, they can be added as a separate mechanism in M2.
+
+```cpp
+struct SceneOptions
+{
+    // Reserved for future options (e.g., default visibility)
+};
+```
 
 ### Internal Flow
 
@@ -226,25 +255,40 @@ buildNodeSubgraph(shapeNode, parentGroup, accumulatedLocation):
 
 ### Per-Part Color via Push Constant
 
-Face vertex shader push constants extended:
+Face shaders push constants extended. The `baseColor` is passed from vertex to fragment as a varying (not accessed directly in fragment push constants) to keep the push constant range within vertex stage only:
 
 ```glsl
+// Vertex shader
 layout(push_constant) uniform PushConstants {
     mat4 projection;
     mat4 modelView;
     vec4 baseColor;  // NEW: per-part color (rgb + alpha)
 };
-```
 
-Face fragment shader uses `baseColor.rgb` instead of hardcoded color:
+layout(location = 0) out vec3 viewNormal;
+layout(location = 1) out vec3 partColor;  // NEW: pass to fragment
+
+void main() {
+    // ... existing transform code ...
+    partColor = baseColor.rgb;
+}
+```
 
 ```glsl
-vec3 shadedColor = baseColor.rgb * (0.24 + 0.76 * diffuse);
+// Fragment shader
+layout(location = 0) in vec3 viewNormal;
+layout(location = 1) in vec3 partColor;  // NEW: from vertex
+
+void main() {
+    // ... existing normal/lighting code ...
+    vec3 shadedColor = partColor * (0.24 + 0.76 * diffuse);
+    fragmentColor = vec4(shadedColor, 1.0);
+}
 ```
 
-Color resolution: if `shapeNode.color.isSet`, use it; otherwise use default gray-blue.
+Push constant range grows from 128 to 144 bytes. The Vulkan guaranteed minimum `maxPushConstantsSize` is 128 bytes, but all desktop GPUs support at least 256 bytes. Push constant stage flags remain `VK_SHADER_STAGE_VERTEX_BIT` only since color is passed as a varying. This spec targets desktop Vulkan only; mobile/embedded platforms are not supported.
 
-Push constant range grows from 128 to 144 bytes (128 + 16 for vec4).
+Color resolution: if `shapeNode.color.isSet`, use it; otherwise use default gray-blue `(0.74, 0.79, 0.86)`.
 
 ## Facade Change
 
@@ -282,13 +326,15 @@ New STEP files using XDE document + XCAFDoc_ColorTool:
 3. Colored STEP → Part node color.isSet == true, RGB values correct
 4. Nested assembly → multi-level tree structure correct
 5. Assembly with location → child Part location is not identity
+6. Plain STEP (non-XCAF, e.g., existing box.step) → still produces valid tree (single Part node, backward compatible)
+7. Shared instances (same prototype used twice with different locations) → produces two separate Part subtrees with distinct locations
 
 ### scene Module Tests (extend test_scene_builder.cpp)
 
-6. buildAssemblyScene basic → scene is non-null, parts is non-empty
-7. parts list count matches leaf Part node count
-8. Each part switchNode toggles visibility
-9. Colored part → push constant contains correct color
+8. buildAssemblyScene basic → scene is non-null, parts is non-empty
+9. parts list count matches leaf Part node count
+10. Each part switchNode toggles visibility
+11. Colored part → vertex shader receives correct color values
 
 ## File Changes Summary
 

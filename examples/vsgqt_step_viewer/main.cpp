@@ -1,14 +1,14 @@
 ﻿#include <vsgocct/StepModelLoader.h>
 
-#include <QtGui/QAction>
 #include <QtCore/QFileInfo>
 #include <QtCore/QStringList>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QFileDialog>
+#include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QMainWindow>
 #include <QtWidgets/QMessageBox>
+#include <QtWidgets/QPushButton>
 #include <QtWidgets/QStatusBar>
-#include <QtWidgets/QToolBar>
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QWidget>
 
@@ -92,6 +92,44 @@ vsgQt::Window* createRenderWindow(
 
     return window;
 }
+// 事件过滤器：跟踪主窗口的移动、缩放和状态变化，
+// 把悬浮面板同步定位到 3D 视图左上角的固定偏移位置。
+class OverlayPositioner : public QObject
+{
+public:
+    OverlayPositioner(QWidget* overlay, QWidget* anchor, const QPoint& offset)
+        : QObject(anchor), overlay_(overlay), anchor_(anchor), offset_(offset) {}
+
+protected:
+    bool eventFilter(QObject* /*watched*/, QEvent* event) override
+    {
+        switch (event->type())
+        {
+        case QEvent::Move:
+        case QEvent::Resize:
+        case QEvent::Show:
+            overlay_->move(anchor_->mapToGlobal(offset_));
+            break;
+        case QEvent::WindowStateChange:
+            if (anchor_->isMinimized())
+                overlay_->hide();
+            else if (anchor_->isVisible())
+            {
+                overlay_->show();
+                overlay_->move(anchor_->mapToGlobal(offset_));
+            }
+            break;
+        default:
+            break;
+        }
+        return false;
+    }
+
+private:
+    QWidget* overlay_;
+    QWidget* anchor_;
+    QPoint offset_;
+};
 } // namespace
 
 int main(int argc, char* argv[])
@@ -127,11 +165,10 @@ int main(int argc, char* argv[])
         QMainWindow mainWindow;
         auto* renderWindow = createRenderWindow(viewer, traits, sceneData);
 
-        // 创建一个中间件 Widget，用 QVBoxLayout 管理渲染容器，
-        // 避免原生 Vulkan 窗口的 Z-order 遮挡工具栏。
+        // 3D 渲染容器占满整个窗口客户区，悬浮面板会叠加在上方。
         auto* centralBase = new QWidget(&mainWindow);
         auto* layout = new QVBoxLayout(centralBase);
-        layout->setContentsMargins(0, 36, 0, 8);
+        layout->setContentsMargins(0, 0, 0, 0);
         layout->setSpacing(0);
 
         auto* container = QWidget::createWindowContainer(renderWindow);
@@ -142,40 +179,77 @@ int main(int argc, char* argv[])
         mainWindow.setCentralWidget(centralBase);
         mainWindow.resize(static_cast<int>(traits->width), static_cast<int>(traits->height));
 
-        // 工具栏上的三个开关分别直连到底层 StepSceneData 的三个 Switch。
-        // 这样示例层不需要了解场景树内部结构，只负责把 UI 状态同步给渲染层。
-        auto* primitiveToolBar = mainWindow.addToolBar(QStringLiteral("Primitives"));
-        primitiveToolBar->setMovable(false);
+        // ─── 悬浮工具面板：叠加在 3D 视图左上角，不占用渲染区域 ───
+        // 使用独立的 Tool 窗口绕过 createWindowContainer 的 Z-order 限制，
+        // 使半透明面板能正确显示在原生 Vulkan 渲染表面之上。
+        auto* overlay = new QWidget(&mainWindow, Qt::Tool | Qt::FramelessWindowHint);
+        overlay->setAttribute(Qt::WA_TranslucentBackground);
+        overlay->setStyleSheet(QStringLiteral(R"(
+            QWidget#overlayPanel {
+                background-color: rgba(30, 30, 30, 180);
+                border-radius: 8px;
+                border: 1px solid rgba(255, 255, 255, 30);
+            }
+            QPushButton {
+                background-color: transparent;
+                color: rgba(255, 255, 255, 180);
+                border: 1px solid rgba(255, 255, 255, 40);
+                border-radius: 4px;
+                padding: 5px 14px;
+                font-size: 12px;
+            }
+            QPushButton:checked {
+                background-color: rgba(60, 130, 220, 200);
+                color: #fff;
+                border-color: rgba(80, 150, 240, 200);
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 30);
+            }
+            QPushButton:checked:hover {
+                background-color: rgba(70, 140, 230, 220);
+            }
+            QPushButton:disabled {
+                color: rgba(255, 255, 255, 60);
+            }
+        )"));
 
-        auto* pointsAction = primitiveToolBar->addAction(QStringLiteral("Points"));
-        pointsAction->setCheckable(true);
-        pointsAction->setChecked(sceneData.pointsVisible());
-        // 如果模型里没有点拓扑，就把按钮禁用，避免用户误以为切换失效。
-        pointsAction->setEnabled(sceneData.pointCount > 0);
-        QObject::connect(pointsAction, &QAction::toggled, &mainWindow, [&sceneData](bool visible)
-        {
-            sceneData.setPointsVisible(visible);
-        });
+        auto* panel = new QWidget(overlay);
+        panel->setObjectName(QStringLiteral("overlayPanel"));
+        auto* overlayRoot = new QVBoxLayout(overlay);
+        overlayRoot->setContentsMargins(0, 0, 0, 0);
+        overlayRoot->addWidget(panel);
 
-        auto* linesAction = primitiveToolBar->addAction(QStringLiteral("Lines"));
-        linesAction->setCheckable(true);
-        linesAction->setChecked(sceneData.linesVisible());
-        // 线段数量来自 Edge 提取后的逻辑统计，不依赖具体 GPU 缓冲展开方式。
-        linesAction->setEnabled(sceneData.lineSegmentCount > 0);
-        QObject::connect(linesAction, &QAction::toggled, &mainWindow, [&sceneData](bool visible)
-        {
-            sceneData.setLinesVisible(visible);
-        });
+        auto* overlayLayout = new QHBoxLayout(panel);
+        overlayLayout->setContentsMargins(8, 6, 8, 6);
+        overlayLayout->setSpacing(6);
 
-        auto* facesAction = primitiveToolBar->addAction(QStringLiteral("Faces"));
-        facesAction->setCheckable(true);
-        facesAction->setChecked(sceneData.facesVisible());
-        // 面是三角化结果，因此这里用 triangleCount 判断按钮是否可用。
-        facesAction->setEnabled(sceneData.triangleCount > 0);
-        QObject::connect(facesAction, &QAction::toggled, &mainWindow, [&sceneData](bool visible)
+        // 工厂 lambda：创建可切换按钮并连接到 StepSceneData 的 Switch 控制方法。
+        auto createToggle = [&](const QString& text, bool checked, bool enabled, auto setter)
         {
-            sceneData.setFacesVisible(visible);
-        });
+            auto* btn = new QPushButton(text, panel);
+            btn->setCheckable(true);
+            btn->setChecked(checked);
+            btn->setEnabled(enabled);
+            QObject::connect(btn, &QPushButton::toggled, &mainWindow, [&sceneData, setter](bool visible)
+            {
+                (sceneData.*setter)(visible);
+            });
+            overlayLayout->addWidget(btn);
+        };
+
+        createToggle(QStringLiteral("Points"), sceneData.pointsVisible(),
+                      sceneData.pointCount > 0, &vsgocct::StepSceneData::setPointsVisible);
+        createToggle(QStringLiteral("Lines"), sceneData.linesVisible(),
+                      sceneData.lineSegmentCount > 0, &vsgocct::StepSceneData::setLinesVisible);
+        createToggle(QStringLiteral("Faces"), sceneData.facesVisible(),
+                      sceneData.triangleCount > 0, &vsgocct::StepSceneData::setFacesVisible);
+
+        overlay->adjustSize();
+
+        // 事件过滤器使悬浮面板跟随主窗口移动和缩放。
+        const QPoint overlayOffset(12, 12);
+        mainWindow.installEventFilter(new OverlayPositioner(overlay, &mainWindow, overlayOffset));
 
         // 状态栏同时展示三类 primitive 的数量，便于快速确认模型当前提取了哪些拓扑信息。
         mainWindow.statusBar()->showMessage(QStringLiteral("Points: %1 | Line Segments: %2 | Triangles: %3")
@@ -190,6 +264,10 @@ int main(int argc, char* argv[])
         viewer->compile();
 
         mainWindow.show();
+
+        // 手动定位并显示悬浮面板，确保首次显示时位置正确。
+        overlay->move(mainWindow.mapToGlobal(overlayOffset));
+        overlay->show();
 
         return application.exec();
     }

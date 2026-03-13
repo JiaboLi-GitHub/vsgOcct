@@ -1483,6 +1483,7 @@ Replace the entire content of `examples/vsgqt_step_viewer/main.cpp`:
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QFileDialog>
+#include <QtWidgets/QFrame>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QMainWindow>
@@ -1682,15 +1683,28 @@ int main(int argc, char* argv[])
         title->setObjectName(QStringLiteral("partListTitle"));
         panelLayout->addWidget(title);
 
+        // Scrollable part list for assemblies with many parts
+        auto* scrollArea = new QScrollArea(panel);
+        scrollArea->setWidgetResizable(true);
+        scrollArea->setFrameShape(QFrame::NoFrame);
+        scrollArea->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; }"));
+
+        auto* scrollContent = new QWidget(scrollArea);
+        auto* scrollLayout = new QVBoxLayout(scrollContent);
+        scrollLayout->setContentsMargins(0, 0, 0, 0);
+        scrollLayout->setSpacing(2);
+
+        int partIndex = 0;
         for (const auto& part : sceneData.parts)
         {
+            ++partIndex;
             QString label = QString::fromStdString(part.name);
             if (label.isEmpty())
             {
-                label = QStringLiteral("(unnamed)");
+                label = QStringLiteral("(unnamed #%1)").arg(partIndex);
             }
 
-            auto* checkbox = new QCheckBox(label, panel);
+            auto* checkbox = new QCheckBox(label, scrollContent);
             checkbox->setChecked(true);
 
             // Capture switchNode by value (ref_ptr copy is cheap)
@@ -1704,10 +1718,14 @@ int main(int argc, char* argv[])
                     }
                 });
 
-            panelLayout->addWidget(checkbox);
+            scrollLayout->addWidget(checkbox);
         }
+        scrollLayout->addStretch();
 
-        overlay->setMaximumHeight(400);
+        scrollArea->setWidget(scrollContent);
+        scrollArea->setMaximumHeight(350);
+        panelLayout->addWidget(scrollArea);
+
         overlay->adjustSize();
 
         const QPoint overlayOffset(12, 12);
@@ -1776,17 +1794,17 @@ Expected: Full build succeeds with zero errors.
 
 - [ ] **Step 2: Regenerate test data**
 
-Run: `build\tests\Debug\generate_test_data.exe`
-Expected: All 5 STEP files generated.
+Run: `build/tests/Debug/generate_test_data.exe`
+Expected: All 5 STEP files generated: `box.step`, `assembly.step`, `colored_box.step`, `nested_assembly.step`, `shared_instances.step`.
 
 - [ ] **Step 3: Run all tests**
 
 Run: `ctest --test-dir build --build-config Debug --output-on-failure`
 Expected: All tests PASS.
 
-- [ ] **Step 4: Manual smoke test (viewer)**
+- [ ] **Step 4: Manual smoke test — nested assembly**
 
-Run: `build\examples\vsgqt_step_viewer\Debug\vsgqt_step_viewer.exe` with `nested_assembly.step`
+Run: `build/examples/vsgqt_step_viewer/Debug/vsgqt_step_viewer.exe` with `nested_assembly.step`
 Verify:
 - Model loads and renders with correct colors (blue box, orange cylinder)
 - Floating panel shows part list with checkboxes
@@ -1794,4 +1812,13 @@ Verify:
 - Status bar shows part count and triangle count
 - Camera framing and navigation work correctly
 
-- [ ] **Step 5: Commit any final fixes if needed**
+- [ ] **Step 5: Manual smoke test — backward compatibility with plain STEP**
+
+Run: `build/examples/vsgqt_step_viewer/Debug/vsgqt_step_viewer.exe` with `box.step`
+Verify:
+- Plain (non-XCAF) STEP file loads without errors
+- Model renders correctly with default gray-blue color
+- Part list shows at least 1 part entry
+- Camera framing works
+
+- [ ] **Step 6: Commit any final fixes if needed**

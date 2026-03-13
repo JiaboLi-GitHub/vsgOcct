@@ -253,31 +253,35 @@ buildNodeSubgraph(shapeNode, parentGroup, accumulatedLocation):
     update boundsAccum
 ```
 
-### Per-Part Color via Push Constant
+### Per-Part Color via Vertex Attribute
 
-Face shaders push constants extended. The `baseColor` is passed from vertex to fragment as a varying (not accessed directly in fragment push constants) to keep the push constant range within vertex stage only:
+Per-part color is implemented as a per-vertex color attribute (binding 2) rather than push constants. VSG automatically pushes only the standard 128-byte projection+modelView matrices; extending push constants would require a custom `StateCommand`, which adds unnecessary complexity.
+
+Instead, each part's face vertices carry a uniform color value replicated per-vertex. This keeps push constants at the standard 128 bytes and is more VSG-idiomatic.
 
 ```glsl
 // Vertex shader
 layout(push_constant) uniform PushConstants {
     mat4 projection;
     mat4 modelView;
-    vec4 baseColor;  // NEW: per-part color (rgb + alpha)
 };
 
+layout(location = 0) in vec3 vertex;
+layout(location = 1) in vec3 normal;
+layout(location = 2) in vec3 inColor;   // NEW: per-vertex color attribute
 layout(location = 0) out vec3 viewNormal;
-layout(location = 1) out vec3 partColor;  // NEW: pass to fragment
+layout(location = 1) out vec3 partColor; // Pass to fragment
 
 void main() {
     // ... existing transform code ...
-    partColor = baseColor.rgb;
+    partColor = inColor;
 }
 ```
 
 ```glsl
 // Fragment shader
 layout(location = 0) in vec3 viewNormal;
-layout(location = 1) in vec3 partColor;  // NEW: from vertex
+layout(location = 1) in vec3 partColor;
 
 void main() {
     // ... existing normal/lighting code ...
@@ -286,7 +290,7 @@ void main() {
 }
 ```
 
-Push constant range grows from 128 to 144 bytes. The Vulkan guaranteed minimum `maxPushConstantsSize` is 128 bytes, but all desktop GPUs support at least 256 bytes. Push constant stage flags remain `VK_SHADER_STAGE_VERTEX_BIT` only since color is passed as a varying. This spec targets desktop Vulkan only; mobile/embedded platforms are not supported.
+The `createFaceNode` function creates a `vsg::vec3Array` filled with the part's color value, bound as vertex attribute 2 alongside positions (binding 0) and normals (binding 1). Push constant range stays at 128 bytes. No Vulkan limits concerns.
 
 Color resolution: if `shapeNode.color.isSet`, use it; otherwise use default gray-blue `(0.74, 0.79, 0.86)`.
 

@@ -910,6 +910,11 @@ namespace vsgocct::scene
 {
 namespace
 {
+// Per-vertex color approach: color is stored as a vertex attribute (binding 2)
+// rather than push constants, because VSG auto-pushes only projection+modelView
+// (128 bytes) and custom push constant data requires a custom StateCommand.
+// Per-vertex color is simpler, keeps push constants at standard 128 bytes,
+// and is more VSG-idiomatic.
 constexpr const char* FACE_VERT_SHADER = R"(
 #version 450
 #extension GL_ARB_separate_shader_objects : enable
@@ -918,11 +923,11 @@ layout(push_constant) uniform PushConstants
 {
     mat4 projection;
     mat4 modelView;
-    vec4 baseColor;
 };
 
 layout(location = 0) in vec3 vertex;
 layout(location = 1) in vec3 normal;
+layout(location = 2) in vec3 inColor;
 layout(location = 0) out vec3 viewNormal;
 layout(location = 1) out vec3 partColor;
 
@@ -935,7 +940,7 @@ void main()
 {
     vec4 viewVertex = modelView * vec4(vertex, 1.0);
     viewNormal = mat3(modelView) * normal;
-    partColor = baseColor.rgb;
+    partColor = inColor;
     gl_Position = projection * viewVertex;
 }
 )";
@@ -1043,12 +1048,12 @@ vsg::ref_ptr<vsg::BindGraphicsPipeline> createPrimitivePipeline(
     const char* fragmentShaderSource,
     VkPrimitiveTopology topology,
     bool includeNormals,
-    bool depthWrite,
-    uint32_t pushConstantSize = 128)
+    bool includeColors,
+    bool depthWrite)
 {
     vsg::DescriptorSetLayouts descriptorSetLayouts;
     vsg::PushConstantRanges pushConstantRanges{
-        {VK_SHADER_STAGE_VERTEX_BIT, 0, pushConstantSize}};
+        {VK_SHADER_STAGE_VERTEX_BIT, 0, 128}};
     auto pipelineLayout = vsg::PipelineLayout::create(descriptorSetLayouts, pushConstantRanges);
 
     auto vertexShaderHints = vsg::ShaderCompileSettings::create();
@@ -1071,6 +1076,13 @@ vsg::ref_ptr<vsg::BindGraphicsPipeline> createPrimitivePipeline(
     {
         bindings.emplace_back(VkVertexInputBindingDescription{1, sizeof(vsg::vec3), VK_VERTEX_INPUT_RATE_VERTEX});
         attributes.emplace_back(VkVertexInputAttributeDescription{1, 1, VK_FORMAT_R32G32B32_SFLOAT, offset});
+    }
+
+    if (includeColors)
+    {
+        uint32_t colorBinding = includeNormals ? 2u : 1u;
+        bindings.emplace_back(VkVertexInputBindingDescription{colorBinding, sizeof(vsg::vec3), VK_VERTEX_INPUT_RATE_VERTEX});
+        attributes.emplace_back(VkVertexInputAttributeDescription{2, colorBinding, VK_FORMAT_R32G32B32_SFLOAT, offset});
     }
 
     auto inputAssemblyState = vsg::InputAssemblyState::create();
@@ -1130,35 +1142,39 @@ vsg::ref_ptr<vsg::Node> createPositionOnlyNode(
 vsg::ref_ptr<vsg::Node> createFaceNode(
     const std::vector<vsg::vec3>& facePositions,
     const std::vector<vsg::vec3>& faceNormals,
-    const vsg::vec4& color)
+    const vsg::vec3& color)
 {
     if (facePositions.empty())
     {
         return vsg::Group::create();
     }
 
-    auto positions = vsg::vec3Array::create(static_cast<uint32_t>(facePositions.size()));
-    auto normals = vsg::vec3Array::create(static_cast<uint32_t>(faceNormals.size()));
-    auto indices = vsg::uintArray::create(static_cast<uint32_t>(facePositions.size()));
+    auto vertexCount = static_cast<uint32_t>(facePositions.size());
+    auto positions = vsg::vec3Array::create(vertexCount);
+    auto normals = vsg::vec3Array::create(vertexCount);
+    auto colors = vsg::vec3Array::create(vertexCount);
+    auto indices = vsg::uintArray::create(vertexCount);
 
     for (std::size_t index = 0; index < facePositions.size(); ++index)
     {
-        (*positions)[static_cast<uint32_t>(index)] = facePositions[index];
-        (*normals)[static_cast<uint32_t>(index)] = faceNormals[index];
-        (*indices)[static_cast<uint32_t>(index)] = static_cast<uint32_t>(index);
+        auto i = static_cast<uint32_t>(index);
+        (*positions)[i] = facePositions[index];
+        (*normals)[i] = faceNormals[index];
+        (*colors)[i] = color;  // Same color for every vertex in this part
+        (*indices)[i] = i;
     }
 
     auto drawCommands = vsg::VertexIndexDraw::create();
-    drawCommands->assignArrays(vsg::DataList{positions, normals});
+    drawCommands->assignArrays(vsg::DataList{positions, normals, colors});
     drawCommands->assignIndices(indices);
     drawCommands->indexCount = indices->width();
     drawCommands->instanceCount = 1;
 
-    // Face pipeline uses 144 bytes push constant (128 for matrices + 16 for baseColor)
+    // Face pipeline: normals=true, colors=true, depthWrite=true
     auto facePipeline = createPrimitivePipeline(
         FACE_VERT_SHADER, FACE_FRAG_SHADER,
         VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-        true, true, 144);
+        true, true, true);
 
     auto stateGroup = vsg::StateGroup::create();
     stateGroup->add(facePipeline);
@@ -1188,9 +1204,9 @@ struct BoundsAccumulator
     }
 };
 
-vsg::vec4 resolveColor(const cad::ShapeNodeColor& color)
+vsg::vec3 resolveColor(const cad::ShapeNodeColor& color)
 {
-    return vsg::vec4(color.r, color.g, color.b, 1.0f);
+    return vsg::vec3(color.r, color.g, color.b);
 }
 
 void buildNodeSubgraph(
@@ -1226,11 +1242,11 @@ void buildNodeSubgraph(
         auto lineNode = createPositionOnlyNode(
             meshResult.linePositions,
             createPrimitivePipeline(LINE_VERT_SHADER, LINE_FRAG_SHADER,
-                                   VK_PRIMITIVE_TOPOLOGY_LINE_LIST, false, false));
+                                   VK_PRIMITIVE_TOPOLOGY_LINE_LIST, false, false, false));
         auto pointNode = createPositionOnlyNode(
             meshResult.pointPositions,
             createPrimitivePipeline(POINT_VERT_SHADER, POINT_FRAG_SHADER,
-                                   VK_PRIMITIVE_TOPOLOGY_POINT_LIST, false, false));
+                                   VK_PRIMITIVE_TOPOLOGY_POINT_LIST, false, false, false));
 
         auto partGroup = vsg::Group::create();
         partGroup->addChild(faceNode);
@@ -1472,6 +1488,23 @@ TEST(AssemblySceneSimple, SinglePartBox)
     EXPECT_TRUE(sceneData.scene);
     EXPECT_GE(sceneData.parts.size(), 1u);
     EXPECT_GT(sceneData.totalTriangleCount, 0u);
+}
+
+TEST(AssemblySceneSimple, ColoredBoxProducesScene)
+{
+    auto assembly = readStep(testDataPath("colored_box.step"));
+    auto sceneData = buildAssemblyScene(assembly);
+    EXPECT_TRUE(sceneData.scene);
+    EXPECT_GE(sceneData.parts.size(), 1u);
+    EXPECT_GT(sceneData.totalTriangleCount, 0u);
+
+    // Verify color at data level: the input assembly should carry red color
+    ASSERT_FALSE(assembly.roots.empty());
+    const auto& root = assembly.roots.front();
+    EXPECT_TRUE(root.color.isSet);
+    EXPECT_NEAR(root.color.r, 1.0f, 0.01f);
+    EXPECT_NEAR(root.color.g, 0.0f, 0.01f);
+    EXPECT_NEAR(root.color.b, 0.0f, 0.01f);
 }
 ```
 

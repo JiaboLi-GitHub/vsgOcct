@@ -72,6 +72,18 @@ function(vsgocct_deploy_qt target_name)
     endif()
 endfunction()
 
+function(vsgocct_copy_runtime_dlls target_name)
+    if(NOT WIN32 OR CMAKE_VERSION VERSION_LESS "3.21")
+        return()
+    endif()
+
+    add_custom_command(TARGET ${target_name} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy -t "$<TARGET_FILE_DIR:${target_name}>" $<TARGET_RUNTIME_DLLS:${target_name}>
+        COMMAND_EXPAND_LISTS
+        COMMENT "Copying runtime DLLs for ${target_name}"
+    )
+endfunction()
+
 add_subdirectory(src)
 
 if(VSGOCCT_BUILD_EXAMPLES)

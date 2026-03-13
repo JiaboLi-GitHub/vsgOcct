@@ -16,6 +16,7 @@ function(vsgocct_add_test name)
     target_link_libraries(${name} PRIVATE GTest::gtest_main vsgocct)
     target_compile_definitions(${name} PRIVATE
         TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+    vsgocct_copy_runtime_dlls(${name})
     gtest_discover_tests(${name})
 endfunction()
 
@@ -31,3 +32,4 @@ add_executable(generate_test_data generate_test_data.cpp)
 target_link_libraries(generate_test_data PRIVATE vsgocct TKDESTEP TKLCAF TKXCAF TKPrim TKTopAlgo)
 target_compile_definitions(generate_test_data PRIVATE
     TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+vsgocct_copy_runtime_dlls(generate_test_data)

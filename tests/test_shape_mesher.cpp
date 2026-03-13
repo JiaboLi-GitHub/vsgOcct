@@ -6,6 +6,7 @@
 #include <vsgocct/mesh/ShapeMesher.h>
 
 #include <cmath>
+#include <functional>
 
 using namespace vsgocct::cad;
 using namespace vsgocct::mesh;
@@ -16,7 +17,8 @@ class ShapeMesherTest : public ::testing::Test
 protected:
     void SetUp() override
     {
-        boxShape = readStep(testDataPath("box.step")).shape;
+        auto assembly = readStep(testDataPath("box.step"));
+        boxShape = assembly.roots.front().shape;
     }
     TopoDS_Shape boxShape;
 };
@@ -52,11 +54,28 @@ TEST_F(ShapeMesherTest, TriangulateBoxEdges)
 
 TEST_F(ShapeMesherTest, TriangulateAssembly)
 {
-    auto assemblyShape = readStep(testDataPath("assembly.step")).shape;
-    auto result = triangulate(assemblyShape);
+    auto assembly = readStep(testDataPath("assembly.step"));
+    // Collect all Part shapes and triangulate them individually
+    std::size_t totalTriangles = 0;
+    std::function<void(const ShapeNode&)> visitParts = [&](const ShapeNode& node)
+    {
+        if (node.type == ShapeNodeType::Part && !node.shape.IsNull())
+        {
+            auto result = triangulate(node.shape);
+            totalTriangles += result.triangleCount;
+        }
+        for (const auto& child : node.children)
+        {
+            visitParts(child);
+        }
+    };
+    for (const auto& root : assembly.roots)
+    {
+        visitParts(root);
+    }
     // Assembly has more geometry than a single box
     auto boxResult = triangulate(boxShape);
-    EXPECT_GT(result.triangleCount, boxResult.triangleCount);
+    EXPECT_GT(totalTriangles, boxResult.triangleCount);
 }
 
 TEST_F(ShapeMesherTest, CustomMeshOptions)

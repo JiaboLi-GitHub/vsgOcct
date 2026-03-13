@@ -4,12 +4,18 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <limits>
 #include <vector>
 
 namespace vsgocct::scene
 {
 namespace
 {
+// Per-vertex color approach: color is stored as a vertex attribute (binding 2)
+// rather than push constants, because VSG auto-pushes only projection+modelView
+// (128 bytes) and custom push constant data requires a custom StateCommand.
+// Per-vertex color is simpler, keeps push constants at standard 128 bytes,
+// and is more VSG-idiomatic.
 constexpr const char* FACE_VERT_SHADER = R"(
 #version 450
 #extension GL_ARB_separate_shader_objects : enable
@@ -22,7 +28,9 @@ layout(push_constant) uniform PushConstants
 
 layout(location = 0) in vec3 vertex;
 layout(location = 1) in vec3 normal;
+layout(location = 2) in vec3 inColor;
 layout(location = 0) out vec3 viewNormal;
+layout(location = 1) out vec3 partColor;
 
 out gl_PerVertex
 {
@@ -33,6 +41,7 @@ void main()
 {
     vec4 viewVertex = modelView * vec4(vertex, 1.0);
     viewNormal = mat3(modelView) * normal;
+    partColor = inColor;
     gl_Position = projection * viewVertex;
 }
 )";
@@ -42,6 +51,7 @@ constexpr const char* FACE_FRAG_SHADER = R"(
 #extension GL_ARB_separate_shader_objects : enable
 
 layout(location = 0) in vec3 viewNormal;
+layout(location = 1) in vec3 partColor;
 layout(location = 0) out vec4 fragmentColor;
 
 void main()
@@ -49,8 +59,7 @@ void main()
     vec3 normal = normalize(gl_FrontFacing ? viewNormal : -viewNormal);
     vec3 lightDirection = normalize(vec3(0.35, 0.55, 1.0));
     float diffuse = max(dot(normal, lightDirection), 0.0);
-    vec3 baseColor = vec3(0.74, 0.79, 0.86);
-    vec3 shadedColor = baseColor * (0.24 + 0.76 * diffuse);
+    vec3 shadedColor = partColor * (0.24 + 0.76 * diffuse);
     fragmentColor = vec4(shadedColor, 1.0);
 }
 )";
@@ -140,17 +149,20 @@ vsg::ref_ptr<vsg::BindGraphicsPipeline> createPrimitivePipeline(
     const char* fragmentShaderSource,
     VkPrimitiveTopology topology,
     bool includeNormals,
+    bool includeColors,
     bool depthWrite)
 {
     vsg::DescriptorSetLayouts descriptorSetLayouts;
-    vsg::PushConstantRanges pushConstantRanges{{VK_SHADER_STAGE_VERTEX_BIT, 0, 128}};
+    vsg::PushConstantRanges pushConstantRanges{
+        {VK_SHADER_STAGE_VERTEX_BIT, 0, 128}};
     auto pipelineLayout = vsg::PipelineLayout::create(descriptorSetLayouts, pushConstantRanges);
 
     auto vertexShaderHints = vsg::ShaderCompileSettings::create();
-    auto vertexShader = vsg::ShaderStage::create(VK_SHADER_STAGE_VERTEX_BIT, "main", vertexShaderSource, vertexShaderHints);
+    auto vertexShader = vsg::ShaderStage::create(
+        VK_SHADER_STAGE_VERTEX_BIT, "main", vertexShaderSource, vertexShaderHints);
     auto fragmentShaderHints = vsg::ShaderCompileSettings::create();
-    auto fragmentShader =
-        vsg::ShaderStage::create(VK_SHADER_STAGE_FRAGMENT_BIT, "main", fragmentShaderSource, fragmentShaderHints);
+    auto fragmentShader = vsg::ShaderStage::create(
+        VK_SHADER_STAGE_FRAGMENT_BIT, "main", fragmentShaderSource, fragmentShaderHints);
     auto shaderStages = vsg::ShaderStages{vertexShader, fragmentShader};
 
     auto vertexInputState = vsg::VertexInputState::create();
@@ -165,6 +177,13 @@ vsg::ref_ptr<vsg::BindGraphicsPipeline> createPrimitivePipeline(
     {
         bindings.emplace_back(VkVertexInputBindingDescription{1, sizeof(vsg::vec3), VK_VERTEX_INPUT_RATE_VERTEX});
         attributes.emplace_back(VkVertexInputAttributeDescription{1, 1, VK_FORMAT_R32G32B32_SFLOAT, offset});
+    }
+
+    if (includeColors)
+    {
+        uint32_t colorBinding = includeNormals ? 2u : 1u;
+        bindings.emplace_back(VkVertexInputBindingDescription{colorBinding, sizeof(vsg::vec3), VK_VERTEX_INPUT_RATE_VERTEX});
+        attributes.emplace_back(VkVertexInputAttributeDescription{2, colorBinding, VK_FORMAT_R32G32B32_SFLOAT, offset});
     }
 
     auto inputAssemblyState = vsg::InputAssemblyState::create();
@@ -223,79 +242,170 @@ vsg::ref_ptr<vsg::Node> createPositionOnlyNode(
 
 vsg::ref_ptr<vsg::Node> createFaceNode(
     const std::vector<vsg::vec3>& facePositions,
-    const std::vector<vsg::vec3>& faceNormals)
+    const std::vector<vsg::vec3>& faceNormals,
+    const vsg::vec3& color)
 {
     if (facePositions.empty())
     {
         return vsg::Group::create();
     }
 
-    auto positions = vsg::vec3Array::create(static_cast<uint32_t>(facePositions.size()));
-    auto normals = vsg::vec3Array::create(static_cast<uint32_t>(faceNormals.size()));
-    auto indices = vsg::uintArray::create(static_cast<uint32_t>(facePositions.size()));
+    auto vertexCount = static_cast<uint32_t>(facePositions.size());
+    auto positions = vsg::vec3Array::create(vertexCount);
+    auto normals = vsg::vec3Array::create(vertexCount);
+    auto colors = vsg::vec3Array::create(vertexCount);
+    auto indices = vsg::uintArray::create(vertexCount);
 
     for (std::size_t index = 0; index < facePositions.size(); ++index)
     {
-        (*positions)[static_cast<uint32_t>(index)] = facePositions[index];
-        (*normals)[static_cast<uint32_t>(index)] = faceNormals[index];
-        (*indices)[static_cast<uint32_t>(index)] = static_cast<uint32_t>(index);
+        auto i = static_cast<uint32_t>(index);
+        (*positions)[i] = facePositions[index];
+        (*normals)[i] = faceNormals[index];
+        (*colors)[i] = color;  // Same color for every vertex in this part
+        (*indices)[i] = i;
     }
 
     auto drawCommands = vsg::VertexIndexDraw::create();
-    drawCommands->assignArrays(vsg::DataList{positions, normals});
+    drawCommands->assignArrays(vsg::DataList{positions, normals, colors});
     drawCommands->assignIndices(indices);
     drawCommands->indexCount = indices->width();
     drawCommands->instanceCount = 1;
 
-    auto stateGroup = vsg::StateGroup::create();
-    stateGroup->add(createPrimitivePipeline(
-        FACE_VERT_SHADER,
-        FACE_FRAG_SHADER,
+    // Face pipeline: normals=true, colors=true, depthWrite=true
+    auto facePipeline = createPrimitivePipeline(
+        FACE_VERT_SHADER, FACE_FRAG_SHADER,
         VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-        true,
-        true));
+        true, true, true);
+
+    auto stateGroup = vsg::StateGroup::create();
+    stateGroup->add(facePipeline);
     stateGroup->addChild(drawCommands);
     return stateGroup;
 }
 
-vsg::ref_ptr<vsg::Switch> createPrimitiveSwitch(const vsg::ref_ptr<vsg::Node>& node, bool visible)
+struct BoundsAccumulator
 {
-    auto primitiveSwitch = vsg::Switch::create();
-    primitiveSwitch->addChild(visible, node ? node : vsg::Group::create());
-    return primitiveSwitch;
+    vsg::dvec3 min{std::numeric_limits<double>::max(),
+                   std::numeric_limits<double>::max(),
+                   std::numeric_limits<double>::max()};
+    vsg::dvec3 max{std::numeric_limits<double>::lowest(),
+                   std::numeric_limits<double>::lowest(),
+                   std::numeric_limits<double>::lowest()};
+    bool valid = false;
+
+    void expand(const vsg::dvec3& bmin, const vsg::dvec3& bmax)
+    {
+        min.x = std::min(min.x, bmin.x);
+        min.y = std::min(min.y, bmin.y);
+        min.z = std::min(min.z, bmin.z);
+        max.x = std::max(max.x, bmax.x);
+        max.y = std::max(max.y, bmax.y);
+        max.z = std::max(max.z, bmax.z);
+        valid = true;
+    }
+};
+
+vsg::vec3 resolveColor(const cad::ShapeNodeColor& color)
+{
+    return vsg::vec3(color.r, color.g, color.b);
+}
+
+void buildNodeSubgraph(
+    const cad::ShapeNode& shapeNode,
+    const vsg::ref_ptr<vsg::Group>& parentGroup,
+    const TopLoc_Location& accumulatedLocation,
+    std::vector<PartSceneNode>& parts,
+    BoundsAccumulator& bounds,
+    const mesh::MeshOptions& meshOptions,
+    std::size_t& totalTriangles,
+    std::size_t& totalLines,
+    std::size_t& totalPoints)
+{
+    TopLoc_Location currentLocation = accumulatedLocation * shapeNode.location;
+
+    if (shapeNode.type == cad::ShapeNodeType::Assembly)
+    {
+        auto group = vsg::Group::create();
+        for (const auto& child : shapeNode.children)
+        {
+            buildNodeSubgraph(child, group, currentLocation, parts, bounds,
+                              meshOptions, totalTriangles, totalLines, totalPoints);
+        }
+        parentGroup->addChild(group);
+    }
+    else // Part
+    {
+        TopoDS_Shape locatedShape = shapeNode.shape.Located(currentLocation);
+        auto meshResult = mesh::triangulate(locatedShape, meshOptions);
+
+        auto color = resolveColor(shapeNode.color);
+        auto faceNode = createFaceNode(meshResult.facePositions, meshResult.faceNormals, color);
+        auto lineNode = createPositionOnlyNode(
+            meshResult.linePositions,
+            createPrimitivePipeline(LINE_VERT_SHADER, LINE_FRAG_SHADER,
+                                   VK_PRIMITIVE_TOPOLOGY_LINE_LIST, false, false, false));
+        auto pointNode = createPositionOnlyNode(
+            meshResult.pointPositions,
+            createPrimitivePipeline(POINT_VERT_SHADER, POINT_FRAG_SHADER,
+                                   VK_PRIMITIVE_TOPOLOGY_POINT_LIST, false, false, false));
+
+        auto partGroup = vsg::Group::create();
+        partGroup->addChild(faceNode);
+        partGroup->addChild(lineNode);
+        partGroup->addChild(pointNode);
+
+        auto partSwitch = vsg::Switch::create();
+        partSwitch->addChild(true, partGroup);
+        parentGroup->addChild(partSwitch);
+
+        parts.push_back({shapeNode.name, partSwitch});
+
+        totalTriangles += meshResult.triangleCount;
+        totalLines += meshResult.lineSegmentCount;
+        totalPoints += meshResult.pointCount;
+
+        if (meshResult.hasGeometry())
+        {
+            bounds.expand(meshResult.boundsMin, meshResult.boundsMax);
+        }
+    }
 }
 } // namespace
 
-StepSceneData buildScene(const mesh::MeshResult& meshResult, const SceneOptions& options)
+AssemblySceneData buildAssemblyScene(
+    const cad::AssemblyData& assembly,
+    const mesh::MeshOptions& meshOptions,
+    const SceneOptions& /*sceneOptions*/)
 {
-    auto pointNode = createPositionOnlyNode(
-        meshResult.pointPositions,
-        createPrimitivePipeline(POINT_VERT_SHADER, POINT_FRAG_SHADER, VK_PRIMITIVE_TOPOLOGY_POINT_LIST, false, false));
-    auto lineNode = createPositionOnlyNode(
-        meshResult.linePositions,
-        createPrimitivePipeline(LINE_VERT_SHADER, LINE_FRAG_SHADER, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, false, false));
-    auto faceNode = createFaceNode(meshResult.facePositions, meshResult.faceNormals);
-
-    auto pointSwitch = createPrimitiveSwitch(pointNode, options.pointsVisible);
-    auto lineSwitch = createPrimitiveSwitch(lineNode, options.linesVisible);
-    auto faceSwitch = createPrimitiveSwitch(faceNode, options.facesVisible);
-
     auto root = vsg::Group::create();
-    root->addChild(faceSwitch);
-    root->addChild(lineSwitch);
-    root->addChild(pointSwitch);
+    std::vector<PartSceneNode> parts;
+    BoundsAccumulator bounds;
+    std::size_t totalTriangles = 0;
+    std::size_t totalLines = 0;
+    std::size_t totalPoints = 0;
 
-    StepSceneData sceneData;
+    TopLoc_Location identity;
+    for (const auto& rootNode : assembly.roots)
+    {
+        buildNodeSubgraph(rootNode, root, identity, parts, bounds,
+                          meshOptions, totalTriangles, totalLines, totalPoints);
+    }
+
+    AssemblySceneData sceneData;
     sceneData.scene = root;
-    sceneData.pointSwitch = pointSwitch;
-    sceneData.lineSwitch = lineSwitch;
-    sceneData.faceSwitch = faceSwitch;
-    sceneData.center = (meshResult.boundsMin + meshResult.boundsMax) * 0.5;
-    sceneData.radius = vsg::length(meshResult.boundsMax - meshResult.boundsMin) * 0.5;
-    sceneData.radius = std::max(sceneData.radius, 1.0);
-    sceneData.pointCount = meshResult.pointCount;
-    sceneData.lineSegmentCount = meshResult.lineSegmentCount;
-    sceneData.triangleCount = meshResult.triangleCount;
+    sceneData.parts = std::move(parts);
+
+    if (bounds.valid)
+    {
+        sceneData.center = (bounds.min + bounds.max) * 0.5;
+        sceneData.radius = vsg::length(bounds.max - bounds.min) * 0.5;
+        sceneData.radius = std::max(sceneData.radius, 1.0);
+    }
+
+    sceneData.totalTriangleCount = totalTriangles;
+    sceneData.totalLineSegmentCount = totalLines;
+    sceneData.totalPointCount = totalPoints;
+
     return sceneData;
 }
 } // namespace vsgocct::scene

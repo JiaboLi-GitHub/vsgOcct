@@ -2,9 +2,9 @@
 
 #include <filesystem>
 
-#include <vsgocct/StepSceneData.h>
+#include <vsgocct/scene/SceneBuilder.h>
 
 namespace vsgocct
 {
-StepSceneData loadStepScene(const std::filesystem::path& stepFile);
+scene::AssemblySceneData loadStepScene(const std::filesystem::path& stepFile);
 } // namespace vsgocct

@@ -1,13 +1,16 @@
-﻿#include <vsgocct/StepModelLoader.h>
+#include <vsgocct/StepModelLoader.h>
 
 #include <QtCore/QFileInfo>
 #include <QtCore/QStringList>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QCheckBox>
 #include <QtWidgets/QFileDialog>
+#include <QtWidgets/QFrame>
 #include <QtWidgets/QHBoxLayout>
+#include <QtWidgets/QLabel>
 #include <QtWidgets/QMainWindow>
 #include <QtWidgets/QMessageBox>
-#include <QtWidgets/QPushButton>
+#include <QtWidgets/QScrollArea>
 #include <QtWidgets/QStatusBar>
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QWidget>
@@ -21,8 +24,6 @@
 
 namespace
 {
-// 优先从命令行读取 STEP 文件路径；
-// 如果没有传参，则弹出文件选择框，方便双击运行示例时直接选模型。
 QString resolveStepFile(const QStringList& arguments)
 {
     if (arguments.size() > 1)
@@ -30,8 +31,6 @@ QString resolveStepFile(const QStringList& arguments)
         return arguments.at(1);
     }
 
-    // 如果本机存在 OCCT 自带示例数据目录，就把它作为初始位置，
-    // 这样在开发环境里测试会更顺手；否则退回到 Qt 默认目录。
     const QString initialDirectory = std::filesystem::exists("D:/OCCT/data/step")
                                          ? QStringLiteral("D:/OCCT/data/step")
                                          : QString();
@@ -46,16 +45,14 @@ QString resolveStepFile(const QStringList& arguments)
 vsgQt::Window* createRenderWindow(
     const vsg::ref_ptr<vsgQt::Viewer>& viewer,
     const vsg::ref_ptr<vsg::WindowTraits>& traits,
-    const vsgocct::StepSceneData& sceneData)
+    const vsgocct::scene::AssemblySceneData& sceneData)
 {
-    // 创建底层 Vulkan 渲染窗口，并把它包装成可嵌入 Qt 的 QWindow。
     auto* window = new vsgQt::Window(viewer, traits, static_cast<QWindow*>(nullptr));
     window->setTitle(QString::fromStdString(traits->windowTitle));
     window->initializeWindow();
 
     if (!traits->device)
     {
-        // 若调用方还没有预先创建 Vulkan 设备，则直接复用窗口适配器生成的默认设备。
         traits->device = window->windowAdapter->getOrCreateDevice();
     }
 
@@ -64,14 +61,10 @@ vsgQt::Window* createRenderWindow(
     const auto radius = std::max(sceneData.radius, 1.0);
     const auto centre = sceneData.center;
 
-    // 根据模型包围球设置一个“能完整看到模型”的默认观察位置：
-    // 相机位于模型前上方，既能看到整体轮廓，也能保留一定立体感。
     auto lookAt = vsg::LookAt::create(
         centre + vsg::dvec3(0.0, -radius * 3.0, radius * 1.6),
         centre,
         vsg::dvec3(0.0, 0.0, 1.0));
-    // 近平面按模型半径的千分之一估算，避免缩放时过早裁切；
-    // 远平面则留出更大的余量，兼顾大模型显示稳定性。
     auto projection = vsg::Perspective::create(
         35.0,
         static_cast<double>(width) / static_cast<double>(height),
@@ -79,21 +72,18 @@ vsgQt::Window* createRenderWindow(
         radius * 12.0);
     auto camera = vsg::Camera::create(projection, lookAt, vsg::ViewportState::create(VkExtent2D{width, height}));
 
-    // 绑定轨迹球控制器，让用户可以旋转、平移和缩放模型。
     auto trackball = vsg::Trackball::create(camera);
     trackball->addWindow(*window);
 
     viewer->addEventHandler(trackball);
     viewer->addEventHandler(vsg::CloseHandler::create(viewer));
 
-    // CommandGraph 把窗口、相机和场景串起来，形成一套可提交到 Vulkan 队列的绘制任务。
     auto commandGraph = vsg::createCommandGraphForView(*window, camera, sceneData.scene);
     viewer->addRecordAndSubmitTaskAndPresentation({commandGraph});
 
     return window;
 }
-// 事件过滤器：跟踪主窗口的移动、缩放和状态变化，
-// 把悬浮面板同步定位到 3D 视图左上角的固定偏移位置。
+
 class OverlayPositioner : public QObject
 {
 public:
@@ -136,21 +126,19 @@ int main(int argc, char* argv[])
 {
     try
     {
-        // Qt 应用对象负责消息循环、窗口系统和控件生命周期。
         QApplication application(argc, argv);
 
         const QString stepFile = resolveStepFile(application.arguments());
         if (stepFile.isEmpty())
         {
-            // 用户取消选文件时直接正常退出，不视为错误。
             return 0;
         }
 
-        // 加载 STEP 模型并转换为 VSG 场景，同时输出点线面统计供终端调试。
         auto sceneData = vsgocct::loadStepScene(std::filesystem::path(stepFile.toStdWString()));
-        std::cout << "Loaded " << sceneData.pointCount << " points, "
-                  << sceneData.lineSegmentCount << " line segments, "
-                  << sceneData.triangleCount << " triangles from "
+        std::cout << "Loaded " << sceneData.totalPointCount << " points, "
+                  << sceneData.totalLineSegmentCount << " line segments, "
+                  << sceneData.totalTriangleCount << " triangles, "
+                  << sceneData.parts.size() << " parts from "
                   << stepFile.toLocal8Bit().constData() << std::endl;
 
         auto viewer = vsgQt::Viewer::create();
@@ -161,11 +149,9 @@ int main(int argc, char* argv[])
         traits->height = 900;
         traits->samples = VK_SAMPLE_COUNT_4_BIT;
 
-        // 用标准 QMainWindow 承载渲染窗口，这样后续很容易继续扩展菜单栏、工具栏和状态栏。
         QMainWindow mainWindow;
         auto* renderWindow = createRenderWindow(viewer, traits, sceneData);
 
-        // 3D 渲染容器占满整个窗口客户区，悬浮面板会叠加在上方。
         auto* centralBase = new QWidget(&mainWindow);
         auto* layout = new QVBoxLayout(centralBase);
         layout->setContentsMargins(0, 0, 0, 0);
@@ -179,9 +165,7 @@ int main(int argc, char* argv[])
         mainWindow.setCentralWidget(centralBase);
         mainWindow.resize(static_cast<int>(traits->width), static_cast<int>(traits->height));
 
-        // ─── 悬浮工具面板：叠加在 3D 视图左上角，不占用渲染区域 ───
-        // 使用独立的 Tool 窗口绕过 createWindowContainer 的 Z-order 限制，
-        // 使半透明面板能正确显示在原生 Vulkan 渲染表面之上。
+        // --- Floating overlay: part list with visibility toggles ---
         auto* overlay = new QWidget(&mainWindow, Qt::Tool | Qt::FramelessWindowHint);
         overlay->setAttribute(Qt::WA_TranslucentBackground);
         overlay->setStyleSheet(QStringLiteral(R"(
@@ -190,27 +174,20 @@ int main(int argc, char* argv[])
                 border-radius: 8px;
                 border: 1px solid rgba(255, 255, 255, 30);
             }
-            QPushButton {
-                background-color: transparent;
+            QCheckBox {
                 color: rgba(255, 255, 255, 180);
-                border: 1px solid rgba(255, 255, 255, 40);
-                border-radius: 4px;
-                padding: 5px 14px;
                 font-size: 12px;
+                padding: 3px 6px;
             }
-            QPushButton:checked {
-                background-color: rgba(60, 130, 220, 200);
-                color: #fff;
-                border-color: rgba(80, 150, 240, 200);
+            QCheckBox::indicator {
+                width: 14px;
+                height: 14px;
             }
-            QPushButton:hover {
-                background-color: rgba(255, 255, 255, 30);
-            }
-            QPushButton:checked:hover {
-                background-color: rgba(70, 140, 230, 220);
-            }
-            QPushButton:disabled {
-                color: rgba(255, 255, 255, 60);
+            QLabel#partListTitle {
+                color: rgba(255, 255, 255, 120);
+                font-size: 11px;
+                font-weight: bold;
+                padding: 2px 6px;
             }
         )"));
 
@@ -220,52 +197,75 @@ int main(int argc, char* argv[])
         overlayRoot->setContentsMargins(0, 0, 0, 0);
         overlayRoot->addWidget(panel);
 
-        auto* overlayLayout = new QHBoxLayout(panel);
-        overlayLayout->setContentsMargins(8, 6, 8, 6);
-        overlayLayout->setSpacing(6);
+        auto* panelLayout = new QVBoxLayout(panel);
+        panelLayout->setContentsMargins(8, 6, 8, 6);
+        panelLayout->setSpacing(2);
 
-        // 工厂 lambda：创建可切换按钮并连接到 StepSceneData 的 Switch 控制方法。
-        auto createToggle = [&](const QString& text, bool checked, bool enabled, auto setter)
+        auto* title = new QLabel(QStringLiteral("Parts (%1)").arg(sceneData.parts.size()), panel);
+        title->setObjectName(QStringLiteral("partListTitle"));
+        panelLayout->addWidget(title);
+
+        // Scrollable part list for assemblies with many parts
+        auto* scrollArea = new QScrollArea(panel);
+        scrollArea->setWidgetResizable(true);
+        scrollArea->setFrameShape(QFrame::NoFrame);
+        scrollArea->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; }"));
+
+        auto* scrollContent = new QWidget(scrollArea);
+        auto* scrollLayout = new QVBoxLayout(scrollContent);
+        scrollLayout->setContentsMargins(0, 0, 0, 0);
+        scrollLayout->setSpacing(2);
+
+        int partIndex = 0;
+        for (const auto& part : sceneData.parts)
         {
-            auto* btn = new QPushButton(text, panel);
-            btn->setCheckable(true);
-            btn->setChecked(checked);
-            btn->setEnabled(enabled);
-            QObject::connect(btn, &QPushButton::toggled, &mainWindow, [&sceneData, setter](bool visible)
+            ++partIndex;
+            QString label = QString::fromStdString(part.name);
+            if (label.isEmpty())
             {
-                (sceneData.*setter)(visible);
-            });
-            overlayLayout->addWidget(btn);
-        };
+                label = QStringLiteral("(unnamed #%1)").arg(partIndex);
+            }
 
-        createToggle(QStringLiteral("Points"), sceneData.pointsVisible(),
-                      sceneData.pointCount > 0, &vsgocct::StepSceneData::setPointsVisible);
-        createToggle(QStringLiteral("Lines"), sceneData.linesVisible(),
-                      sceneData.lineSegmentCount > 0, &vsgocct::StepSceneData::setLinesVisible);
-        createToggle(QStringLiteral("Faces"), sceneData.facesVisible(),
-                      sceneData.triangleCount > 0, &vsgocct::StepSceneData::setFacesVisible);
+            auto* checkbox = new QCheckBox(label, scrollContent);
+            checkbox->setChecked(true);
+
+            // Capture switchNode by value (ref_ptr copy is cheap)
+            auto switchNode = part.switchNode;
+            QObject::connect(checkbox, &QCheckBox::toggled, &mainWindow,
+                [switchNode](bool visible)
+                {
+                    if (switchNode && !switchNode->children.empty())
+                    {
+                        switchNode->children.front().mask = visible ? vsg::MASK_ALL : vsg::MASK_OFF;
+                    }
+                });
+
+            scrollLayout->addWidget(checkbox);
+        }
+        scrollLayout->addStretch();
+
+        scrollArea->setWidget(scrollContent);
+        scrollArea->setMaximumHeight(350);
+        panelLayout->addWidget(scrollArea);
 
         overlay->adjustSize();
 
-        // 事件过滤器使悬浮面板跟随主窗口移动和缩放。
         const QPoint overlayOffset(12, 12);
         mainWindow.installEventFilter(new OverlayPositioner(overlay, &mainWindow, overlayOffset));
 
-        // 状态栏同时展示三类 primitive 的数量，便于快速确认模型当前提取了哪些拓扑信息。
-        mainWindow.statusBar()->showMessage(QStringLiteral("Points: %1 | Line Segments: %2 | Triangles: %3")
-                                                .arg(static_cast<qulonglong>(sceneData.pointCount))
-                                                .arg(static_cast<qulonglong>(sceneData.lineSegmentCount))
-                                                .arg(static_cast<qulonglong>(sceneData.triangleCount)));
+        mainWindow.statusBar()->showMessage(
+            QStringLiteral("Parts: %1 | Triangles: %2 | Lines: %3 | Points: %4")
+                .arg(static_cast<qulonglong>(sceneData.parts.size()))
+                .arg(static_cast<qulonglong>(sceneData.totalTriangleCount))
+                .arg(static_cast<qulonglong>(sceneData.totalLineSegmentCount))
+                .arg(static_cast<qulonglong>(sceneData.totalPointCount)));
 
-        // 持续重绘适合交互式三维查看器；16ms 间隔约等于 60 FPS 刷新节奏。
         viewer->continuousUpdate = true;
         viewer->setInterval(16);
-        // compile 会在真正进入事件循环前完成渲染资源准备，减少首帧卡顿。
         viewer->compile();
 
         mainWindow.show();
 
-        // 手动定位并显示悬浮面板，确保首次显示时位置正确。
         overlay->move(mainWindow.mapToGlobal(overlayOffset));
         overlay->show();
 
@@ -273,14 +273,12 @@ int main(int argc, char* argv[])
     }
     catch (const vsg::Exception& ex)
     {
-        // VSG 异常通常带有 Vulkan 返回码，保留 result 便于定位图形后端问题。
         std::cerr << "VSG exception: " << ex.message << " (result=" << ex.result << ')' << std::endl;
         QMessageBox::critical(nullptr, QStringLiteral("VSG Error"), QString::fromLocal8Bit(ex.message.c_str()));
         return 1;
     }
     catch (const std::exception& ex)
     {
-        // 兜底捕获标准异常，避免程序静默退出，并把错误同步显示到 GUI 和终端。
         std::cerr << "Unhandled exception: " << ex.what() << std::endl;
         QMessageBox::critical(nullptr, QStringLiteral("STEP Viewer Error"), QString::fromLocal8Bit(ex.what()));
         return 1;

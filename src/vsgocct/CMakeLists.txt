@@ -6,6 +6,7 @@ set(VSGOCCT_SOURCES
 )
 
 set(VSGOCCT_HEADERS
+    ../../include/vsgocct/ShapeId.h
     ../../include/vsgocct/StepModelLoader.h
     ../../include/vsgocct/cad/StepReader.h
     ../../include/vsgocct/mesh/ShapeMesher.h

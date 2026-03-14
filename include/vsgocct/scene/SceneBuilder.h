@@ -27,6 +27,11 @@ struct AssemblySceneData
     vsg::ref_ptr<vsg::Node> scene;
     std::vector<PartSceneNode> parts;
 
+    // Per-geometry-type switch nodes for global visibility control
+    std::vector<vsg::ref_ptr<vsg::Switch>> faceSwitches;
+    std::vector<vsg::ref_ptr<vsg::Switch>> lineSwitches;
+    std::vector<vsg::ref_ptr<vsg::Switch>> pointSwitches;
+
     vsg::dvec3 center;
     double radius = 1.0;
 

@@ -20,19 +20,20 @@ namespace vsgocct::cad
 {
 namespace
 {
-std::string readLabelName(const TDF_Label& label)
-{
-    Handle(TDataStd_Name) nameAttr;
-    if (label.FindAttribute(TDataStd_Name::GetID(), nameAttr))
+    std::string readLabelName(const TDF_Label& label)
     {
-        // Convert from TCollection_ExtendedString (UTF-16) to ASCII.
-        // TCollection_AsciiString handles Latin characters; non-Latin chars
-        // become '?' but this is acceptable for M1a scope.
-        TCollection_AsciiString ascii(nameAttr->Get());
-        return std::string(ascii.ToCString());
+        Handle(TDataStd_Name) nameAttr;
+        if (!label.FindAttribute(TDataStd_Name::GetID(), nameAttr))
+            return {};
+
+        const auto& ext = nameAttr->Get();
+        std::string utf8(static_cast<size_t>(ext.LengthOfCString()) + 1, '\0');
+        Standard_PCharacter out = utf8.data();
+        const int len = ext.ToUTF8CString(out);
+        utf8.resize(static_cast<size_t>(len));
+        return utf8;
     }
-    return {};
-}
+
 
 ShapeNodeColor readLabelColor(const TDF_Label& label,
                               const Handle(XCAFDoc_ColorTool)& colorTool)

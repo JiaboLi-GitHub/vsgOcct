@@ -170,12 +170,12 @@ int main(int argc, char* argv[])
         overlay->setAttribute(Qt::WA_TranslucentBackground);
         overlay->setStyleSheet(QStringLiteral(R"(
             QWidget#overlayPanel {
-                background-color: rgba(30, 30, 30, 180);
+                background-color: rgba(245, 245, 245, 220);
                 border-radius: 8px;
-                border: 1px solid rgba(255, 255, 255, 30);
+                border: 1px solid rgba(0, 0, 0, 40);
             }
             QCheckBox {
-                color: rgba(255, 255, 255, 180);
+                color: rgb(40, 40, 40);
                 font-size: 12px;
                 padding: 3px 6px;
             }
@@ -184,7 +184,7 @@ int main(int argc, char* argv[])
                 height: 14px;
             }
             QLabel#partListTitle {
-                color: rgba(255, 255, 255, 120);
+                color: rgb(80, 80, 80);
                 font-size: 11px;
                 font-weight: bold;
                 padding: 2px 6px;
@@ -201,6 +201,51 @@ int main(int argc, char* argv[])
         panelLayout->setContentsMargins(8, 6, 8, 6);
         panelLayout->setSpacing(2);
 
+        // --- Display controls: toggle faces, lines, points ---
+        auto* displayTitle = new QLabel(QStringLiteral("Display"), panel);
+        displayTitle->setObjectName(QStringLiteral("partListTitle"));
+        panelLayout->addWidget(displayTitle);
+
+        auto toggleAllSwitches = [](const std::vector<vsg::ref_ptr<vsg::Switch>>& switches, bool visible)
+        {
+            for (const auto& sw : switches)
+            {
+                if (sw && !sw->children.empty())
+                {
+                    sw->children.front().mask = visible ? vsg::MASK_ALL : vsg::MASK_OFF;
+                }
+            }
+        };
+
+        auto* facesCheckbox = new QCheckBox(QStringLiteral("Faces"), panel);
+        facesCheckbox->setChecked(true);
+        auto faceSwitches = sceneData.faceSwitches;
+        QObject::connect(facesCheckbox, &QCheckBox::toggled, &mainWindow,
+            [toggleAllSwitches, faceSwitches](bool visible) { toggleAllSwitches(faceSwitches, visible); });
+        panelLayout->addWidget(facesCheckbox);
+
+        auto* linesCheckbox = new QCheckBox(QStringLiteral("Lines"), panel);
+        linesCheckbox->setChecked(true);
+        auto lineSwitches = sceneData.lineSwitches;
+        QObject::connect(linesCheckbox, &QCheckBox::toggled, &mainWindow,
+            [toggleAllSwitches, lineSwitches](bool visible) { toggleAllSwitches(lineSwitches, visible); });
+        panelLayout->addWidget(linesCheckbox);
+
+        auto* pointsCheckbox = new QCheckBox(QStringLiteral("Points"), panel);
+        pointsCheckbox->setChecked(true);
+        auto pointSwitches = sceneData.pointSwitches;
+        QObject::connect(pointsCheckbox, &QCheckBox::toggled, &mainWindow,
+            [toggleAllSwitches, pointSwitches](bool visible) { toggleAllSwitches(pointSwitches, visible); });
+        panelLayout->addWidget(pointsCheckbox);
+
+        // Separator between display controls and part list
+        auto* separator = new QFrame(panel);
+        separator->setFrameShape(QFrame::HLine);
+        separator->setFrameShadow(QFrame::Sunken);
+        separator->setStyleSheet(QStringLiteral("QFrame { color: rgba(0, 0, 0, 60); margin: 4px 0px; }"));
+        panelLayout->addWidget(separator);
+
+        // --- Part list ---
         auto* title = new QLabel(QStringLiteral("Parts (%1)").arg(sceneData.parts.size()), panel);
         title->setObjectName(QStringLiteral("partListTitle"));
         panelLayout->addWidget(title);

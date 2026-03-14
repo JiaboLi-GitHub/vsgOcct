@@ -315,6 +315,9 @@ void buildNodeSubgraph(
     const vsg::ref_ptr<vsg::Group>& parentGroup,
     const TopLoc_Location& accumulatedLocation,
     std::vector<PartSceneNode>& parts,
+    std::vector<vsg::ref_ptr<vsg::Switch>>& faceSwitches,
+    std::vector<vsg::ref_ptr<vsg::Switch>>& lineSwitches,
+    std::vector<vsg::ref_ptr<vsg::Switch>>& pointSwitches,
     BoundsAccumulator& bounds,
     const mesh::MeshOptions& meshOptions,
     std::size_t& totalTriangles,
@@ -328,8 +331,9 @@ void buildNodeSubgraph(
         auto group = vsg::Group::create();
         for (const auto& child : shapeNode.children)
         {
-            buildNodeSubgraph(child, group, currentLocation, parts, bounds,
-                              meshOptions, totalTriangles, totalLines, totalPoints);
+            buildNodeSubgraph(child, group, currentLocation, parts,
+                              faceSwitches, lineSwitches, pointSwitches,
+                              bounds, meshOptions, totalTriangles, totalLines, totalPoints);
         }
         parentGroup->addChild(group);
     }
@@ -349,10 +353,21 @@ void buildNodeSubgraph(
             createPrimitivePipeline(POINT_VERT_SHADER, POINT_FRAG_SHADER,
                                    VK_PRIMITIVE_TOPOLOGY_POINT_LIST, false, false, false));
 
+        auto faceSwitch = vsg::Switch::create();
+        faceSwitch->addChild(true, faceNode);
+        auto lineSwitch = vsg::Switch::create();
+        lineSwitch->addChild(true, lineNode);
+        auto pointSwitch = vsg::Switch::create();
+        pointSwitch->addChild(true, pointNode);
+
+        faceSwitches.push_back(faceSwitch);
+        lineSwitches.push_back(lineSwitch);
+        pointSwitches.push_back(pointSwitch);
+
         auto partGroup = vsg::Group::create();
-        partGroup->addChild(faceNode);
-        partGroup->addChild(lineNode);
-        partGroup->addChild(pointNode);
+        partGroup->addChild(faceSwitch);
+        partGroup->addChild(lineSwitch);
+        partGroup->addChild(pointSwitch);
 
         auto partSwitch = vsg::Switch::create();
         partSwitch->addChild(true, partGroup);
@@ -379,6 +394,9 @@ AssemblySceneData buildAssemblyScene(
 {
     auto root = vsg::Group::create();
     std::vector<PartSceneNode> parts;
+    std::vector<vsg::ref_ptr<vsg::Switch>> faceSwitches;
+    std::vector<vsg::ref_ptr<vsg::Switch>> lineSwitches;
+    std::vector<vsg::ref_ptr<vsg::Switch>> pointSwitches;
     BoundsAccumulator bounds;
     std::size_t totalTriangles = 0;
     std::size_t totalLines = 0;
@@ -387,13 +405,17 @@ AssemblySceneData buildAssemblyScene(
     TopLoc_Location identity;
     for (const auto& rootNode : assembly.roots)
     {
-        buildNodeSubgraph(rootNode, root, identity, parts, bounds,
-                          meshOptions, totalTriangles, totalLines, totalPoints);
+        buildNodeSubgraph(rootNode, root, identity, parts,
+                          faceSwitches, lineSwitches, pointSwitches,
+                          bounds, meshOptions, totalTriangles, totalLines, totalPoints);
     }
 
     AssemblySceneData sceneData;
     sceneData.scene = root;
     sceneData.parts = std::move(parts);
+    sceneData.faceSwitches = std::move(faceSwitches);
+    sceneData.lineSwitches = std::move(lineSwitches);
+    sceneData.pointSwitches = std::move(pointSwitches);
 
     if (bounds.valid)
     {

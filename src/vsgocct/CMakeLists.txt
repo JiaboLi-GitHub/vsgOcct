@@ -3,13 +3,16 @@ set(VSGOCCT_SOURCES
     cad/StepReader.cpp
     mesh/ShapeMesher.cpp
     scene/SceneBuilder.cpp
+    scene/PickQuery.cpp
 )
 
 set(VSGOCCT_HEADERS
+    ../../include/vsgocct/ShapeId.h
     ../../include/vsgocct/StepModelLoader.h
     ../../include/vsgocct/cad/StepReader.h
     ../../include/vsgocct/mesh/ShapeMesher.h
     ../../include/vsgocct/scene/SceneBuilder.h
+    ../../include/vsgocct/scene/PickQuery.h
 )
 
 add_library(vsgocct STATIC

@@ -322,7 +322,8 @@ void buildNodeSubgraph(
     const mesh::MeshOptions& meshOptions,
     std::size_t& totalTriangles,
     std::size_t& totalLines,
-    std::size_t& totalPoints)
+    std::size_t& totalPoints,
+    SceneIndex& sceneIndex)
 {
     TopLoc_Location currentLocation = accumulatedLocation * shapeNode.location;
 
@@ -333,7 +334,8 @@ void buildNodeSubgraph(
         {
             buildNodeSubgraph(child, group, currentLocation, parts,
                               faceSwitches, lineSwitches, pointSwitches,
-                              bounds, meshOptions, totalTriangles, totalLines, totalPoints);
+                              bounds, meshOptions, totalTriangles, totalLines, totalPoints,
+                              sceneIndex);
         }
         parentGroup->addChild(group);
     }
@@ -375,6 +377,23 @@ void buildNodeSubgraph(
 
         parts.push_back({shapeNode.name, partSwitch});
 
+        // --- M1b: Populate SceneIndex ---
+        sceneIndex.shapeToSwitch[shapeNode.id] = partSwitch;
+        sceneIndex.shapeToOcct[shapeNode.id] = locatedShape;
+        sceneIndex.nodeToShape[partSwitch.get()] = shapeNode.id;
+
+        // Build face entries from mesh faceRanges
+        std::vector<SceneIndex::FaceEntry> faceEntries;
+        for (std::uint32_t faceIdx = 0; faceIdx < static_cast<std::uint32_t>(meshResult.faceRanges.size()); ++faceIdx)
+        {
+            FaceId fid{detail::fnv1a64(shapeNode.id.value, faceIdx)};
+            const auto& range = meshResult.faceRanges[faceIdx];
+            sceneIndex.faceToTriangles[fid] = range;
+            faceEntries.push_back({range.firstTriangle, fid});
+        }
+        sceneIndex.shapeFaces[shapeNode.id] = std::move(faceEntries);
+        // --- end M1b ---
+
         totalTriangles += meshResult.triangleCount;
         totalLines += meshResult.lineSegmentCount;
         totalPoints += meshResult.pointCount;
@@ -386,6 +405,44 @@ void buildNodeSubgraph(
     }
 }
 } // namespace
+
+const vsg::Switch* SceneIndex::findSwitch(ShapeId id) const
+{
+    auto it = shapeToSwitch.find(id);
+    return it != shapeToSwitch.end() ? it->second.get() : nullptr;
+}
+
+const TopoDS_Shape* SceneIndex::findOcctShape(ShapeId id) const
+{
+    auto it = shapeToOcct.find(id);
+    return it != shapeToOcct.end() ? &it->second : nullptr;
+}
+
+ShapeId SceneIndex::findShapeByNode(const vsg::Node* node) const
+{
+    auto it = nodeToShape.find(node);
+    return it != nodeToShape.end() ? it->second : ShapeId{};
+}
+
+FaceId SceneIndex::findFaceByTriangle(ShapeId partId, std::uint32_t triangleIndex) const
+{
+    auto it = shapeFaces.find(partId);
+    if (it == shapeFaces.end() || it->second.empty())
+    {
+        return FaceId{};
+    }
+    const auto& entries = it->second;
+    // Binary search: find last entry where firstTriangle <= triangleIndex
+    auto upper = std::upper_bound(
+        entries.begin(), entries.end(), triangleIndex,
+        [](std::uint32_t tri, const FaceEntry& e) { return tri < e.firstTriangle; });
+    if (upper == entries.begin())
+    {
+        return FaceId{};
+    }
+    --upper;
+    return upper->faceId;
+}
 
 AssemblySceneData buildAssemblyScene(
     const cad::AssemblyData& assembly,
@@ -402,15 +459,18 @@ AssemblySceneData buildAssemblyScene(
     std::size_t totalLines = 0;
     std::size_t totalPoints = 0;
 
+    SceneIndex sceneIndex;
     TopLoc_Location identity;
     for (const auto& rootNode : assembly.roots)
     {
         buildNodeSubgraph(rootNode, root, identity, parts,
                           faceSwitches, lineSwitches, pointSwitches,
-                          bounds, meshOptions, totalTriangles, totalLines, totalPoints);
+                          bounds, meshOptions, totalTriangles, totalLines, totalPoints,
+                          sceneIndex);
     }
 
     AssemblySceneData sceneData;
+    sceneData.index = std::move(sceneIndex);
     sceneData.scene = root;
     sceneData.parts = std::move(parts);
     sceneData.faceSwitches = std::move(faceSwitches);

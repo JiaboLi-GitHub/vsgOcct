@@ -2,10 +2,13 @@
 
 #include <filesystem>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <TopLoc_Location.hxx>
 #include <TopoDS_Shape.hxx>
+
+#include <vsgocct/ShapeId.h>
 
 namespace vsgocct::cad
 {
@@ -35,11 +38,20 @@ struct ShapeNode
     TopoDS_Shape shape;
     TopLoc_Location location;
     std::vector<ShapeNode> children;
+    vsgocct::ShapeId id;
+    std::string assemblyPath;
 };
 
 struct AssemblyData
 {
     std::vector<ShapeNode> roots;
+    std::unordered_map<vsgocct::ShapeId, const ShapeNode*> shapeIndex;
+
+    AssemblyData() = default;
+    AssemblyData(const AssemblyData&) = delete;
+    AssemblyData& operator=(const AssemblyData&) = delete;
+    AssemblyData(AssemblyData&&) = default;
+    AssemblyData& operator=(AssemblyData&&) = default;
 };
 
 AssemblyData readStep(const std::filesystem::path& stepFile,

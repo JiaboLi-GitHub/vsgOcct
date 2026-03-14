@@ -14,6 +14,7 @@
 #include <TopAbs_Orientation.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopExp.hxx>
+#include <TopExp_Explorer.hxx>
 #include <TopLoc_Location.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <TopoDS.hxx>
@@ -292,24 +293,25 @@ void extractLines(const TopoDS_Shape& shape, double linearDeflection, SceneBuffe
     }
 }
 
-void extractFaces(const TopoDS_Shape& shape, SceneBuffers& buffers)
+void extractFaces(const TopoDS_Shape& shape, SceneBuffers& buffers,
+                  std::vector<FaceMeshRange>& faceRanges)
 {
-    IndexedShapeMap faceMap;
-    TopExp::MapShapes(shape, TopAbs_FACE, faceMap);
-
-    for (int faceIndex = 1; faceIndex <= faceMap.Extent(); ++faceIndex)
+    std::uint32_t triOffset = 0;
+    for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More(); explorer.Next())
     {
-        const TopoDS_Face face = TopoDS::Face(faceMap.FindKey(faceIndex));
+        const TopoDS_Face face = TopoDS::Face(explorer.Current());
 
         TopLoc_Location location;
         const auto triangulation = BRep_Tool::Triangulation(face, location);
         if (triangulation.IsNull() || triangulation->NbTriangles() == 0)
         {
+            faceRanges.push_back({triOffset, 0});
             continue;
         }
 
         const gp_Trsf transform = location.Transformation();
         const bool isReversed = face.Orientation() == TopAbs_REVERSED;
+        std::uint32_t emittedTriangles = 0;
 
         for (int triangleIndex = 1; triangleIndex <= triangulation->NbTriangles(); ++triangleIndex)
         {
@@ -334,6 +336,7 @@ void extractFaces(const TopoDS_Shape& shape, SceneBuffers& buffers)
             }
             faceNormal.Normalize();
 
+            ++emittedTriangles;
             ++buffers.faces.triangleCount;
 
             for (std::size_t vertexIndex = 0; vertexIndex < points.size(); ++vertexIndex)
@@ -364,6 +367,9 @@ void extractFaces(const TopoDS_Shape& shape, SceneBuffers& buffers)
                 buffers.faces.normals.push_back(toVec3(normal));
             }
         }
+
+        faceRanges.push_back({triOffset, emittedTriangles});
+        triOffset += emittedTriangles;
     }
 }
 } // namespace
@@ -379,7 +385,8 @@ MeshResult triangulate(const TopoDS_Shape& shape, const MeshOptions& options)
     SceneBuffers buffers;
     extractPoints(shape, buffers);
     extractLines(shape, linearDeflection, buffers);
-    extractFaces(shape, buffers);
+    std::vector<FaceMeshRange> faceRanges;
+    extractFaces(shape, buffers, faceRanges);
 
     if (!buffers.hasGeometry())
     {
@@ -396,6 +403,7 @@ MeshResult triangulate(const TopoDS_Shape& shape, const MeshOptions& options)
     result.triangleCount = buffers.faces.triangleCount;
     result.boundsMin = buffers.bounds.min;
     result.boundsMax = buffers.bounds.max;
+    result.faceRanges = std::move(faceRanges);
     return result;
 }
 } // namespace vsgocct::mesh

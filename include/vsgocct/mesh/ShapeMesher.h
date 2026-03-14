@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 #include <TopoDS_Shape.hxx>
@@ -13,6 +14,12 @@ struct MeshOptions
     double linearDeflection = 0.0;
     double angularDeflection = 0.35;
     bool relative = false;
+};
+
+struct FaceMeshRange
+{
+    std::uint32_t firstTriangle = 0;
+    std::uint32_t triangleCount = 0;
 };
 
 struct MeshResult
@@ -29,6 +36,8 @@ struct MeshResult
 
     vsg::dvec3 boundsMin;
     vsg::dvec3 boundsMax;
+
+    std::vector<FaceMeshRange> faceRanges;
 
     bool hasGeometry() const
     {

@@ -97,3 +97,21 @@ TEST_F(ShapeMesherTest, EmptyShape)
     TopoDS_Shape empty;
     EXPECT_ANY_THROW(triangulate(empty));
 }
+
+TEST_F(ShapeMesherTest, FaceRangesCountMatchesBRepFaces)
+{
+    auto result = triangulate(boxShape);
+    // A box has 6 B-Rep faces
+    EXPECT_EQ(result.faceRanges.size(), 6u);
+}
+
+TEST_F(ShapeMesherTest, FaceRangesTriangleSumConsistent)
+{
+    auto result = triangulate(boxShape);
+    std::uint32_t sum = 0;
+    for (const auto& range : result.faceRanges)
+    {
+        sum += range.triangleCount;
+    }
+    EXPECT_EQ(sum, static_cast<std::uint32_t>(result.triangleCount));
+}

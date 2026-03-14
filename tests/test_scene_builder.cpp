@@ -2,11 +2,13 @@
 
 #include "test_helpers.h"
 
+#include <vsgocct/ShapeId.h>
 #include <vsgocct/cad/StepReader.h>
 #include <vsgocct/scene/SceneBuilder.h>
 
 #include <cmath>
 
+using namespace vsgocct;
 using namespace vsgocct::cad;
 using namespace vsgocct::scene;
 using namespace vsgocct::test;
@@ -117,4 +119,73 @@ TEST(AssemblySceneSimple, ColoredBoxProducesScene)
     EXPECT_NEAR(root.color.r, 1.0f, 0.01f);
     EXPECT_NEAR(root.color.g, 0.0f, 0.01f);
     EXPECT_NEAR(root.color.b, 0.0f, 0.01f);
+}
+
+// --- M1b: SceneIndex tests ---
+
+TEST_F(AssemblySceneTest, SceneIndexForwardLookup)
+{
+    auto sceneData = buildAssemblyScene(assembly);
+
+    for (const auto& part : sceneData.parts)
+    {
+        auto it = sceneData.index.nodeToShape.find(part.switchNode.get());
+        ASSERT_NE(it, sceneData.index.nodeToShape.end())
+            << "Part '" << part.name << "' switch not in nodeToShape";
+
+        ShapeId sid = it->second;
+        EXPECT_TRUE(static_cast<bool>(sid));
+
+        auto switchIt = sceneData.index.shapeToSwitch.find(sid);
+        ASSERT_NE(switchIt, sceneData.index.shapeToSwitch.end());
+        EXPECT_EQ(switchIt->second.get(), part.switchNode.get());
+    }
+}
+
+TEST_F(AssemblySceneTest, SceneIndexReverseLookup)
+{
+    auto sceneData = buildAssemblyScene(assembly);
+    ASSERT_FALSE(sceneData.parts.empty());
+
+    for (const auto& [nodePtr, shapeId] : sceneData.index.nodeToShape)
+    {
+        EXPECT_TRUE(static_cast<bool>(shapeId));
+        auto switchIt = sceneData.index.shapeToSwitch.find(shapeId);
+        ASSERT_NE(switchIt, sceneData.index.shapeToSwitch.end());
+        EXPECT_EQ(switchIt->second.get(), nodePtr);
+    }
+}
+
+TEST_F(AssemblySceneTest, SceneIndexFaceCompleteness)
+{
+    auto sceneData = buildAssemblyScene(assembly);
+
+    EXPECT_GT(sceneData.index.faceToTriangles.size(), 0u);
+    EXPECT_EQ(sceneData.index.shapeFaces.size(), sceneData.parts.size());
+}
+
+TEST_F(AssemblySceneTest, FindFaceByTriangleValid)
+{
+    auto sceneData = buildAssemblyScene(assembly);
+    ASSERT_FALSE(sceneData.index.shapeFaces.empty());
+
+    for (const auto& [shapeId, faceEntries] : sceneData.index.shapeFaces)
+    {
+        if (faceEntries.empty()) continue;
+
+        FaceId found = sceneData.index.findFaceByTriangle(shapeId, 0);
+        EXPECT_TRUE(static_cast<bool>(found))
+            << "findFaceByTriangle returned null FaceId for triangle 0";
+        EXPECT_EQ(found, faceEntries.front().faceId);
+        return; // one check is enough
+    }
+    FAIL() << "No parts with faces found";
+}
+
+TEST(AssemblySceneSimple, PickEmptyScene)
+{
+    AssemblyData empty;
+    auto sceneData = buildAssemblyScene(empty);
+    EXPECT_TRUE(sceneData.index.shapeToSwitch.empty());
+    EXPECT_TRUE(sceneData.index.nodeToShape.empty());
 }

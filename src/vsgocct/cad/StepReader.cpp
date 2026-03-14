@@ -1,4 +1,5 @@
 #include <vsgocct/cad/StepReader.h>
+#include <vsgocct/ShapeId.h>
 
 #include <STEPCAFControl_Reader.hxx>
 #include <NCollection_Sequence.hxx>
@@ -11,10 +12,12 @@
 #include <Quantity_Color.hxx>
 #include <TCollection_AsciiString.hxx>
 
+#include <functional>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 
 namespace vsgocct::cad
 {
@@ -52,10 +55,22 @@ ShapeNodeColor readLabelColor(const TDF_Label& label,
 ShapeNode buildShapeNode(const TDF_Label& label,
                          const Handle(XCAFDoc_ShapeTool)& shapeTool,
                          const Handle(XCAFDoc_ColorTool)& colorTool,
-                         const ShapeNodeColor& parentColor)
+                         const ShapeNodeColor& parentColor,
+                         const std::string& parentPath,
+                         std::unordered_map<std::string, int>& siblingCounter)
 {
     ShapeNode node;
     node.name = readLabelName(label);
+
+    // --- M1b: Assembly path and stable ID ---
+    std::string displayName = node.name.empty() ? "_unnamed" : node.name;
+    int count = siblingCounter[displayName]++;
+    std::string suffix = count > 0 ? (":" + std::to_string(count + 1)) : "";
+    std::string currentPath = parentPath + "/" + displayName + suffix;
+    node.assemblyPath = currentPath;
+    node.id = ShapeId{vsgocct::detail::fnv1a64(currentPath)};
+    // --- end M1b ---
+
     node.color = readLabelColor(label, colorTool);
 
     // Color inheritance: if not set on this label, inherit from parent
@@ -96,12 +111,14 @@ ShapeNode buildShapeNode(const TDF_Label& label,
         node.type = ShapeNodeType::Assembly;
         NCollection_Sequence<TDF_Label> components;
         shapeTool->GetComponents(resolvedLabel, components);
+        std::unordered_map<std::string, int> childSiblingCounter;
         for (Standard_Integer i = 1; i <= components.Length(); ++i)
         {
             try
             {
                 node.children.push_back(
-                    buildShapeNode(components.Value(i), shapeTool, colorTool, node.color));
+                    buildShapeNode(components.Value(i), shapeTool, colorTool,
+                                   node.color, currentPath, childSiblingCounter));
             }
             catch (const std::exception& ex)
             {
@@ -172,12 +189,14 @@ AssemblyData readStep(const std::filesystem::path& stepFile, const ReaderOptions
 
     AssemblyData assembly;
     ShapeNodeColor noParentColor;
+    std::unordered_map<std::string, int> rootSiblingCounter;
     for (Standard_Integer i = 1; i <= freeLabels.Length(); ++i)
     {
         try
         {
             assembly.roots.push_back(
-                buildShapeNode(freeLabels.Value(i), shapeTool, colorTool, noParentColor));
+                buildShapeNode(freeLabels.Value(i), shapeTool, colorTool,
+                               noParentColor, "", rootSiblingCounter));
         }
         catch (const std::exception& ex)
         {
@@ -195,6 +214,20 @@ AssemblyData readStep(const std::filesystem::path& stepFile, const ReaderOptions
     if (totalParts == 0)
     {
         throw std::runtime_error("No valid parts found in STEP file: " + stepFile.u8string());
+    }
+
+    // Populate shapeIndex (post-construction walk to avoid pointer invalidation)
+    std::function<void(const ShapeNode&)> indexNodes = [&](const ShapeNode& node)
+    {
+        assembly.shapeIndex[node.id] = &node;
+        for (const auto& child : node.children)
+        {
+            indexNodes(child);
+        }
+    };
+    for (const auto& root : assembly.roots)
+    {
+        indexNodes(root);
     }
 
     return assembly;

@@ -1,4 +1,7 @@
 #include <vsgocct/StepModelLoader.h>
+#include <vsgocct/scene/PickQuery.h>
+
+#include <sstream>
 
 #include <QtCore/QFileInfo>
 #include <QtCore/QStringList>
@@ -45,7 +48,8 @@ QString resolveStepFile(const QStringList& arguments)
 vsgQt::Window* createRenderWindow(
     const vsg::ref_ptr<vsgQt::Viewer>& viewer,
     const vsg::ref_ptr<vsg::WindowTraits>& traits,
-    const vsgocct::scene::AssemblySceneData& sceneData)
+    const vsgocct::scene::AssemblySceneData& sceneData,
+    vsg::ref_ptr<vsg::Camera>& outCamera)
 {
     auto* window = new vsgQt::Window(viewer, traits, static_cast<QWindow*>(nullptr));
     window->setTitle(QString::fromStdString(traits->windowTitle));
@@ -81,6 +85,7 @@ vsgQt::Window* createRenderWindow(
     auto commandGraph = vsg::createCommandGraphForView(*window, camera, sceneData.scene);
     viewer->addRecordAndSubmitTaskAndPresentation({commandGraph});
 
+    outCamera = camera;
     return window;
 }
 
@@ -120,6 +125,65 @@ private:
     QWidget* anchor_;
     QPoint offset_;
 };
+
+class PickHandler : public vsg::Inherit<vsg::Visitor, PickHandler>
+{
+public:
+    PickHandler(const vsgocct::scene::AssemblySceneData& sceneData,
+                const vsg::ref_ptr<vsg::Camera>& camera,
+                QStatusBar* statusBar)
+        : sceneData_(sceneData), camera_(camera), statusBar_(statusBar) {}
+
+    void apply(vsg::ButtonPressEvent& buttonPress) override
+    {
+        if (buttonPress.button != 1) return; // Left click only
+
+        lastX_ = buttonPress.x;
+        lastY_ = buttonPress.y;
+        pressed_ = true;
+    }
+
+    void apply(vsg::ButtonReleaseEvent& buttonRelease) override
+    {
+        if (!pressed_ || buttonRelease.button != 1) return;
+        pressed_ = false;
+
+        // Only pick if mouse didn't move much (not a drag)
+        auto dx = buttonRelease.x - lastX_;
+        auto dy = buttonRelease.y - lastY_;
+        if (dx * dx + dy * dy > 9) return; // 3px threshold
+
+        // Normalize to [-1, 1] viewport coordinates
+        auto viewportState = camera_->getViewportState();
+        auto viewport = viewportState->getViewport();
+        double nx = (2.0 * buttonRelease.x - viewport.x) / viewport.width - 1.0;
+        double ny = (2.0 * buttonRelease.y - viewport.y) / viewport.height - 1.0;
+
+        auto result = vsgocct::scene::pickScene(sceneData_, camera_, nx, ny);
+        if (result)
+        {
+            std::ostringstream oss;
+            oss << "Picked: ShapeId=0x" << std::hex << result->shapeId.value
+                << " FaceId=0x" << result->faceId.value << std::dec
+                << " at (" << result->worldPoint.x << ", "
+                << result->worldPoint.y << ", "
+                << result->worldPoint.z << ")";
+            statusBar_->showMessage(QString::fromStdString(oss.str()));
+        }
+        else
+        {
+            statusBar_->showMessage(QStringLiteral("No part under cursor"));
+        }
+    }
+
+private:
+    const vsgocct::scene::AssemblySceneData& sceneData_;
+    vsg::ref_ptr<vsg::Camera> camera_;
+    QStatusBar* statusBar_;
+    int32_t lastX_ = 0;
+    int32_t lastY_ = 0;
+    bool pressed_ = false;
+};
 } // namespace
 
 int main(int argc, char* argv[])
@@ -150,7 +214,8 @@ int main(int argc, char* argv[])
         traits->samples = VK_SAMPLE_COUNT_4_BIT;
 
         QMainWindow mainWindow;
-        auto* renderWindow = createRenderWindow(viewer, traits, sceneData);
+        vsg::ref_ptr<vsg::Camera> camera;
+        auto* renderWindow = createRenderWindow(viewer, traits, sceneData, camera);
 
         auto* centralBase = new QWidget(&mainWindow);
         auto* layout = new QVBoxLayout(centralBase);
@@ -304,6 +369,9 @@ int main(int argc, char* argv[])
                 .arg(static_cast<qulonglong>(sceneData.totalTriangleCount))
                 .arg(static_cast<qulonglong>(sceneData.totalLineSegmentCount))
                 .arg(static_cast<qulonglong>(sceneData.totalPointCount)));
+
+        // --- M1b: Pick handler ---
+        viewer->addEventHandler(PickHandler::create(sceneData, camera, mainWindow.statusBar()));
 
         viewer->continuousUpdate = true;
         viewer->setInterval(16);

@@ -2,6 +2,8 @@
 
 #include "test_helpers.h"
 
+#include <set>
+#include <vsgocct/ShapeId.h>
 #include <vsgocct/cad/StepReader.h>
 
 using namespace vsgocct::cad;
@@ -195,4 +197,126 @@ TEST(StepReader, SharedInstancesProduceSeparateNodes)
     };
     countParts(root);
     EXPECT_EQ(partCount, 2u);
+}
+
+// --- ShapeId stability and index tests ---
+
+TEST(StepReaderIds, IdCrossSessionStability)
+{
+    auto assembly1 = readStep(testDataPath("nested_assembly.step"));
+    auto assembly2 = readStep(testDataPath("nested_assembly.step"));
+
+    ASSERT_FALSE(assembly1.roots.empty());
+    ASSERT_FALSE(assembly2.roots.empty());
+
+    // Same file loaded twice must produce identical ShapeIds
+    EXPECT_EQ(assembly1.roots.front().id, assembly2.roots.front().id);
+
+    // Compare all Part IDs
+    std::vector<vsgocct::ShapeId> ids1, ids2;
+    std::function<void(const ShapeNode&, std::vector<vsgocct::ShapeId>&)> collectIds =
+        [&](const ShapeNode& n, std::vector<vsgocct::ShapeId>& ids)
+    {
+        ids.push_back(n.id);
+        for (const auto& child : n.children)
+        {
+            collectIds(child, ids);
+        }
+    };
+    collectIds(assembly1.roots.front(), ids1);
+    collectIds(assembly2.roots.front(), ids2);
+    ASSERT_EQ(ids1.size(), ids2.size());
+    for (std::size_t i = 0; i < ids1.size(); ++i)
+    {
+        EXPECT_EQ(ids1[i], ids2[i]);
+    }
+}
+
+TEST(StepReaderIds, AssemblyPathFormat)
+{
+    auto assembly = readStep(testDataPath("nested_assembly.step"));
+    ASSERT_FALSE(assembly.roots.empty());
+
+    const auto& root = assembly.roots.front();
+    // Root path starts with /
+    EXPECT_EQ(root.assemblyPath[0], '/');
+    // Root path has no double slashes
+    EXPECT_EQ(root.assemblyPath.find("//"), std::string::npos);
+
+    // All nodes have non-empty assemblyPath
+    std::function<void(const ShapeNode&)> checkPaths = [&](const ShapeNode& n)
+    {
+        EXPECT_FALSE(n.assemblyPath.empty()) << "Node '" << n.name << "' has empty path";
+        EXPECT_EQ(n.assemblyPath[0], '/') << "Path doesn't start with /: " << n.assemblyPath;
+        for (const auto& child : n.children)
+        {
+            checkPaths(child);
+            // Child path should start with parent path
+            EXPECT_EQ(child.assemblyPath.substr(0, n.assemblyPath.size()), n.assemblyPath)
+                << "Child path '" << child.assemblyPath
+                << "' does not start with parent '" << n.assemblyPath << "'";
+        }
+    };
+    checkPaths(root);
+}
+
+TEST(StepReaderIds, SiblingNameDisambiguation)
+{
+    auto assembly = readStep(testDataPath("shared_instances.step"));
+    ASSERT_FALSE(assembly.roots.empty());
+
+    const auto& root = assembly.roots.front();
+    EXPECT_EQ(root.type, ShapeNodeType::Assembly);
+
+    // Shared instances: two children with same prototype name
+    // They should get different paths (one plain, one with :2 suffix)
+    std::vector<std::string> childPaths;
+    for (const auto& child : root.children)
+    {
+        childPaths.push_back(child.assemblyPath);
+    }
+
+    // All paths must be unique
+    std::set<std::string> uniquePaths(childPaths.begin(), childPaths.end());
+    EXPECT_EQ(uniquePaths.size(), childPaths.size())
+        << "Sibling paths are not unique";
+
+    // All IDs must be unique
+    std::set<std::uint64_t> uniqueIds;
+    for (const auto& child : root.children)
+    {
+        uniqueIds.insert(child.id.value);
+    }
+    EXPECT_EQ(uniqueIds.size(), root.children.size())
+        << "Sibling IDs are not unique";
+}
+
+TEST(StepReaderIds, ShapeIndexCompleteness)
+{
+    auto assembly = readStep(testDataPath("nested_assembly.step"));
+
+    // Count all nodes in tree
+    std::size_t nodeCount = 0;
+    std::function<void(const ShapeNode&)> countNodes = [&](const ShapeNode& n)
+    {
+        ++nodeCount;
+        for (const auto& child : n.children)
+        {
+            countNodes(child);
+        }
+    };
+    for (const auto& root : assembly.roots)
+    {
+        countNodes(root);
+    }
+
+    // shapeIndex should contain all nodes
+    EXPECT_EQ(assembly.shapeIndex.size(), nodeCount);
+
+    // All pointers should be valid (dereferenceable)
+    for (const auto& [id, ptr] : assembly.shapeIndex)
+    {
+        ASSERT_NE(ptr, nullptr);
+        EXPECT_EQ(ptr->id, id) << "shapeIndex entry points to wrong node";
+    }
 }

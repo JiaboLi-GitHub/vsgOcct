@@ -82,6 +82,39 @@ TEST_F(AssemblySceneTest, GeometryCounts)
     // Lines and points may or may not exist depending on meshing
 }
 
+TEST_F(AssemblySceneTest, FaceRegistryPopulated)
+{
+    auto sceneData = buildAssemblyScene(assembly);
+    EXPECT_FALSE(sceneData.faceRegistry.empty());
+
+    for (const auto& [faceId, info] : sceneData.faceRegistry)
+    {
+        EXPECT_GT(faceId, 0u);
+        EXPECT_FALSE(info.partName.empty());
+    }
+}
+
+TEST_F(AssemblySceneTest, FaceColorRefsPopulated)
+{
+    auto sceneData = buildAssemblyScene(assembly);
+    EXPECT_FALSE(sceneData.faceColorRefs.empty());
+
+    for (const auto& [faceId, info] : sceneData.faceRegistry)
+    {
+        EXPECT_TRUE(sceneData.faceColorRefs.count(faceId) > 0)
+            << "Missing color ref for faceId=" << faceId;
+        auto& ref = sceneData.faceColorRefs.at(faceId);
+        EXPECT_TRUE(ref.colorArray);
+        EXPECT_GT(ref.vertexCount, 0u);
+    }
+}
+
+TEST_F(AssemblySceneTest, PickSceneCreated)
+{
+    auto sceneData = buildAssemblyScene(assembly);
+    EXPECT_TRUE(sceneData.pickScene);
+}
+
 TEST(AssemblySceneSimple, EmptyAssemblyRoots)
 {
     // Empty assembly should produce valid but empty scene
@@ -117,4 +150,11 @@ TEST(AssemblySceneSimple, ColoredBoxProducesScene)
     EXPECT_NEAR(root.color.r, 1.0f, 0.01f);
     EXPECT_NEAR(root.color.g, 0.0f, 0.01f);
     EXPECT_NEAR(root.color.b, 0.0f, 0.01f);
+}
+
+TEST(AssemblySceneSimple, SinglePartBoxFaceRegistry)
+{
+    auto assembly = readStep(testDataPath("box.step"));
+    auto sceneData = buildAssemblyScene(assembly);
+    EXPECT_EQ(sceneData.faceRegistry.size(), 6u);
 }

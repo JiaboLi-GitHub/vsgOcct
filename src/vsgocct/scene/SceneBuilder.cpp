@@ -1,6 +1,7 @@
 #include <vsgocct/scene/SceneBuilder.h>
 
 #include <vsg/all.h>
+#include <vsgocct/pick/FaceIdCodec.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -144,6 +145,46 @@ void main()
 }
 )";
 
+constexpr const char* PICK_VERT_SHADER = R"(
+#version 450
+#extension GL_ARB_separate_shader_objects : enable
+
+layout(push_constant) uniform PushConstants
+{
+    mat4 projection;
+    mat4 modelView;
+};
+
+layout(location = 0) in vec3 vertex;
+layout(location = 1) in vec3 idColor;
+
+layout(location = 0) out vec3 fragIdColor;
+
+out gl_PerVertex
+{
+    vec4 gl_Position;
+};
+
+void main()
+{
+    gl_Position = projection * modelView * vec4(vertex, 1.0);
+    fragIdColor = idColor;
+}
+)";
+
+constexpr const char* PICK_FRAG_SHADER = R"(
+#version 450
+#extension GL_ARB_separate_shader_objects : enable
+
+layout(location = 0) in vec3 fragIdColor;
+layout(location = 0) out vec4 outColor;
+
+void main()
+{
+    outColor = vec4(fragIdColor, 1.0);
+}
+)";
+
 vsg::ref_ptr<vsg::BindGraphicsPipeline> createPrimitivePipeline(
     const char* vertexShaderSource,
     const char* fragmentShaderSource,
@@ -210,6 +251,50 @@ vsg::ref_ptr<vsg::BindGraphicsPipeline> createPrimitivePipeline(
     return vsg::BindGraphicsPipeline::create(graphicsPipeline);
 }
 
+vsg::ref_ptr<vsg::BindGraphicsPipeline> createPickPipeline()
+{
+    vsg::DescriptorSetLayouts descriptorSetLayouts;
+    vsg::PushConstantRanges pushConstantRanges{
+        {VK_SHADER_STAGE_VERTEX_BIT, 0, 128}};
+    auto pipelineLayout = vsg::PipelineLayout::create(descriptorSetLayouts, pushConstantRanges);
+
+    auto vertexShader = vsg::ShaderStage::create(
+        VK_SHADER_STAGE_VERTEX_BIT, "main", PICK_VERT_SHADER, vsg::ShaderCompileSettings::create());
+    auto fragmentShader = vsg::ShaderStage::create(
+        VK_SHADER_STAGE_FRAGMENT_BIT, "main", PICK_FRAG_SHADER, vsg::ShaderCompileSettings::create());
+    auto shaderStages = vsg::ShaderStages{vertexShader, fragmentShader};
+
+    auto vertexInputState = vsg::VertexInputState::create();
+    auto& bindings = vertexInputState->vertexBindingDescriptions;
+    auto& attributes = vertexInputState->vertexAttributeDescriptions;
+
+    constexpr uint32_t offset = 0;
+    // Binding 0: position -> location 0
+    bindings.emplace_back(VkVertexInputBindingDescription{0, sizeof(vsg::vec3), VK_VERTEX_INPUT_RATE_VERTEX});
+    attributes.emplace_back(VkVertexInputAttributeDescription{0, 0, VK_FORMAT_R32G32B32_SFLOAT, offset});
+    // Binding 1: idColor -> location 1
+    bindings.emplace_back(VkVertexInputBindingDescription{1, sizeof(vsg::vec3), VK_VERTEX_INPUT_RATE_VERTEX});
+    attributes.emplace_back(VkVertexInputAttributeDescription{1, 1, VK_FORMAT_R32G32B32_SFLOAT, offset});
+
+    auto inputAssemblyState = vsg::InputAssemblyState::create();
+    inputAssemblyState->topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    auto rasterizationState = vsg::RasterizationState::create();
+    rasterizationState->cullMode = VK_CULL_MODE_NONE;
+
+    auto depthStencilState = vsg::DepthStencilState::create();
+    depthStencilState->depthTestEnable = VK_TRUE;
+    depthStencilState->depthWriteEnable = VK_TRUE;
+    depthStencilState->depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
+
+    auto graphicsPipelineStates = vsg::GraphicsPipelineStates{
+        vertexInputState, inputAssemblyState, rasterizationState,
+        vsg::ColorBlendState::create(), vsg::MultisampleState::create(), depthStencilState};
+
+    auto graphicsPipeline = vsg::GraphicsPipeline::create(pipelineLayout, shaderStages, graphicsPipelineStates);
+    return vsg::BindGraphicsPipeline::create(graphicsPipeline);
+}
+
 vsg::ref_ptr<vsg::Node> createPositionOnlyNode(
     const std::vector<vsg::vec3>& positions,
     const vsg::ref_ptr<vsg::BindGraphicsPipeline>& pipeline)
@@ -240,14 +325,22 @@ vsg::ref_ptr<vsg::Node> createPositionOnlyNode(
     return stateGroup;
 }
 
-vsg::ref_ptr<vsg::Node> createFaceNode(
+struct FaceNodeResult
+{
+    vsg::ref_ptr<vsg::Node> node;
+    vsg::ref_ptr<vsg::vec3Array> positions;
+    vsg::ref_ptr<vsg::uintArray> indices;
+    vsg::ref_ptr<vsg::vec3Array> colorArray;
+};
+
+FaceNodeResult createFaceNode(
     const std::vector<vsg::vec3>& facePositions,
     const std::vector<vsg::vec3>& faceNormals,
     const vsg::vec3& color)
 {
     if (facePositions.empty())
     {
-        return vsg::Group::create();
+        return {vsg::Group::create(), {}, {}, {}};
     }
 
     auto vertexCount = static_cast<uint32_t>(facePositions.size());
@@ -279,6 +372,41 @@ vsg::ref_ptr<vsg::Node> createFaceNode(
 
     auto stateGroup = vsg::StateGroup::create();
     stateGroup->add(facePipeline);
+    stateGroup->addChild(drawCommands);
+
+    return {stateGroup, positions, indices, colors};
+}
+
+vsg::ref_ptr<vsg::Node> createPickFaceNode(
+    const vsg::ref_ptr<vsg::vec3Array>& positions,
+    const vsg::ref_ptr<vsg::uintArray>& indices,
+    const std::vector<uint32_t>& perTriangleFaceId,
+    uint32_t vertexCount)
+{
+    if (vertexCount == 0)
+    {
+        return vsg::Group::create();
+    }
+
+    auto idColors = vsg::vec3Array::create(vertexCount);
+    for (uint32_t tri = 0; tri < static_cast<uint32_t>(perTriangleFaceId.size()); ++tri)
+    {
+        auto color = pick::encodeFaceId(perTriangleFaceId[tri]);
+        (*idColors)[tri * 3 + 0] = color;
+        (*idColors)[tri * 3 + 1] = color;
+        (*idColors)[tri * 3 + 2] = color;
+    }
+
+    auto drawCommands = vsg::VertexIndexDraw::create();
+    drawCommands->assignArrays(vsg::DataList{positions, idColors});
+    drawCommands->assignIndices(indices);
+    drawCommands->indexCount = indices->width();
+    drawCommands->instanceCount = 1;
+
+    auto pickPipeline = createPickPipeline();
+
+    auto stateGroup = vsg::StateGroup::create();
+    stateGroup->add(pickPipeline);
     stateGroup->addChild(drawCommands);
     return stateGroup;
 }
@@ -313,33 +441,40 @@ vsg::vec3 resolveColor(const cad::ShapeNodeColor& color)
 void buildNodeSubgraph(
     const cad::ShapeNode& shapeNode,
     const vsg::ref_ptr<vsg::Group>& parentGroup,
+    const vsg::ref_ptr<vsg::Group>& pickParentGroup,
     const TopLoc_Location& accumulatedLocation,
     std::vector<PartSceneNode>& parts,
     BoundsAccumulator& bounds,
     const mesh::MeshOptions& meshOptions,
     std::size_t& totalTriangles,
     std::size_t& totalLines,
-    std::size_t& totalPoints)
+    std::size_t& totalPoints,
+    uint32_t& nextFaceId,
+    std::unordered_map<uint32_t, FaceInfo>& faceRegistry,
+    std::unordered_map<uint32_t, PartColorRef>& faceColorRefs)
 {
     TopLoc_Location currentLocation = accumulatedLocation * shapeNode.location;
 
     if (shapeNode.type == cad::ShapeNodeType::Assembly)
     {
         auto group = vsg::Group::create();
+        auto pickGroup = vsg::Group::create();
         for (const auto& child : shapeNode.children)
         {
-            buildNodeSubgraph(child, group, currentLocation, parts, bounds,
-                              meshOptions, totalTriangles, totalLines, totalPoints);
+            buildNodeSubgraph(child, group, pickGroup, currentLocation, parts, bounds,
+                              meshOptions, totalTriangles, totalLines, totalPoints,
+                              nextFaceId, faceRegistry, faceColorRefs);
         }
         parentGroup->addChild(group);
+        pickParentGroup->addChild(pickGroup);
     }
     else // Part
     {
         TopoDS_Shape locatedShape = shapeNode.shape.Located(currentLocation);
-        auto meshResult = mesh::triangulate(locatedShape, meshOptions);
+        auto meshResult = mesh::triangulate(locatedShape, nextFaceId, meshOptions);
 
         auto color = resolveColor(shapeNode.color);
-        auto faceNode = createFaceNode(meshResult.facePositions, meshResult.faceNormals, color);
+        auto faceResult = createFaceNode(meshResult.facePositions, meshResult.faceNormals, color);
         auto lineNode = createPositionOnlyNode(
             meshResult.linePositions,
             createPrimitivePipeline(LINE_VERT_SHADER, LINE_FRAG_SHADER,
@@ -350,7 +485,7 @@ void buildNodeSubgraph(
                                    VK_PRIMITIVE_TOPOLOGY_POINT_LIST, false, false, false));
 
         auto partGroup = vsg::Group::create();
-        partGroup->addChild(faceNode);
+        partGroup->addChild(faceResult.node);
         partGroup->addChild(lineNode);
         partGroup->addChild(pointNode);
 
@@ -358,7 +493,38 @@ void buildNodeSubgraph(
         partSwitch->addChild(true, partGroup);
         parentGroup->addChild(partSwitch);
 
-        parts.push_back({shapeNode.name, partSwitch});
+        // Build pick subtree
+        auto vertexCount = static_cast<uint32_t>(meshResult.facePositions.size());
+        auto pickFaceNode = createPickFaceNode(
+            faceResult.positions, faceResult.indices,
+            meshResult.perTriangleFaceId, vertexCount);
+
+        auto pickPartGroup = vsg::Group::create();
+        pickPartGroup->addChild(pickFaceNode);
+
+        auto pickSwitch = vsg::Switch::create();
+        pickSwitch->addChild(true, pickPartGroup);
+        pickParentGroup->addChild(pickSwitch);
+
+        // Populate faceRegistry and faceColorRefs
+        uint32_t partIdx = static_cast<uint32_t>(parts.size());
+        for (const auto& faceData : meshResult.faces)
+        {
+            FaceInfo info;
+            info.faceId = faceData.faceId;
+            info.partName = shapeNode.name;
+            info.partIndex = partIdx;
+            info.faceNormal = faceData.normal;
+            faceRegistry[faceData.faceId] = info;
+
+            PartColorRef colorRef;
+            colorRef.colorArray = faceResult.colorArray;
+            colorRef.vertexOffset = faceData.triangleOffset * 3;
+            colorRef.vertexCount = faceData.triangleCount * 3;
+            faceColorRefs[faceData.faceId] = colorRef;
+        }
+
+        parts.push_back({shapeNode.name, partSwitch, pickSwitch});
 
         totalTriangles += meshResult.triangleCount;
         totalLines += meshResult.lineSegmentCount;
@@ -378,17 +544,22 @@ AssemblySceneData buildAssemblyScene(
     const SceneOptions& /*sceneOptions*/)
 {
     auto root = vsg::Group::create();
+    auto pickRoot = vsg::Group::create();
     std::vector<PartSceneNode> parts;
     BoundsAccumulator bounds;
     std::size_t totalTriangles = 0;
     std::size_t totalLines = 0;
     std::size_t totalPoints = 0;
+    uint32_t nextFaceId = 1;
+    std::unordered_map<uint32_t, FaceInfo> faceRegistry;
+    std::unordered_map<uint32_t, PartColorRef> faceColorRefs;
 
     TopLoc_Location identity;
     for (const auto& rootNode : assembly.roots)
     {
-        buildNodeSubgraph(rootNode, root, identity, parts, bounds,
-                          meshOptions, totalTriangles, totalLines, totalPoints);
+        buildNodeSubgraph(rootNode, root, pickRoot, identity, parts, bounds,
+                          meshOptions, totalTriangles, totalLines, totalPoints,
+                          nextFaceId, faceRegistry, faceColorRefs);
     }
 
     AssemblySceneData sceneData;
@@ -405,6 +576,10 @@ AssemblySceneData buildAssemblyScene(
     sceneData.totalTriangleCount = totalTriangles;
     sceneData.totalLineSegmentCount = totalLines;
     sceneData.totalPointCount = totalPoints;
+
+    sceneData.pickScene = pickRoot;
+    sceneData.faceRegistry = std::move(faceRegistry);
+    sceneData.faceColorRefs = std::move(faceColorRefs);
 
     return sceneData;
 }

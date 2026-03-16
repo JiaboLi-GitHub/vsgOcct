@@ -3,6 +3,7 @@ set(VSGOCCT_SOURCES
     cad/StepReader.cpp
     mesh/ShapeMesher.cpp
     pick/PickHandler.cpp
+    pick/SelectionManager.cpp
     scene/SceneBuilder.cpp
 )
 
@@ -11,6 +12,7 @@ set(VSGOCCT_HEADERS
     ../../include/vsgocct/cad/StepReader.h
     ../../include/vsgocct/mesh/ShapeMesher.h
     ../../include/vsgocct/pick/PickHandler.h
+    ../../include/vsgocct/pick/SelectionManager.h
     ../../include/vsgocct/scene/SceneBuilder.h
 )
 

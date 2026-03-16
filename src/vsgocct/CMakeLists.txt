@@ -2,6 +2,7 @@ set(VSGOCCT_SOURCES
     StepModelLoader.cpp
     cad/StepReader.cpp
     mesh/ShapeMesher.cpp
+    pick/PickHandler.cpp
     scene/SceneBuilder.cpp
 )
 
@@ -9,6 +10,7 @@ set(VSGOCCT_HEADERS
     ../../include/vsgocct/StepModelLoader.h
     ../../include/vsgocct/cad/StepReader.h
     ../../include/vsgocct/mesh/ShapeMesher.h
+    ../../include/vsgocct/pick/PickHandler.h
     ../../include/vsgocct/scene/SceneBuilder.h
 )
 

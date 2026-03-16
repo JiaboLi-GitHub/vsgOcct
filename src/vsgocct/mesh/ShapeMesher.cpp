@@ -66,6 +66,8 @@ struct FaceBuffers
     std::vector<vsg::vec3> positions;
     std::vector<vsg::vec3> normals;
     std::size_t triangleCount = 0;
+    std::vector<FaceData> faces;
+    std::vector<uint32_t> perTriangleFaceId;
 };
 
 struct SceneBuffers
@@ -292,7 +294,7 @@ void extractLines(const TopoDS_Shape& shape, double linearDeflection, SceneBuffe
     }
 }
 
-void extractFaces(const TopoDS_Shape& shape, SceneBuffers& buffers)
+void extractFaces(const TopoDS_Shape& shape, SceneBuffers& buffers, uint32_t& nextFaceId)
 {
     IndexedShapeMap faceMap;
     TopExp::MapShapes(shape, TopAbs_FACE, faceMap);
@@ -310,6 +312,11 @@ void extractFaces(const TopoDS_Shape& shape, SceneBuffers& buffers)
 
         const gp_Trsf transform = location.Transformation();
         const bool isReversed = face.Orientation() == TopAbs_REVERSED;
+
+        uint32_t currentFaceId = nextFaceId++;
+        uint32_t faceTriangleOffset = static_cast<uint32_t>(buffers.faces.triangleCount);
+        uint32_t faceTriangleCount = 0;
+        double nx = 0.0, ny = 0.0, nz = 0.0;
 
         for (int triangleIndex = 1; triangleIndex <= triangulation->NbTriangles(); ++triangleIndex)
         {
@@ -335,6 +342,11 @@ void extractFaces(const TopoDS_Shape& shape, SceneBuffers& buffers)
             faceNormal.Normalize();
 
             ++buffers.faces.triangleCount;
+            ++faceTriangleCount;
+            buffers.faces.perTriangleFaceId.push_back(currentFaceId);
+            nx += faceNormal.X();
+            ny += faceNormal.Y();
+            nz += faceNormal.Z();
 
             for (std::size_t vertexIndex = 0; vertexIndex < points.size(); ++vertexIndex)
             {
@@ -364,11 +376,23 @@ void extractFaces(const TopoDS_Shape& shape, SceneBuffers& buffers)
                 buffers.faces.normals.push_back(toVec3(normal));
             }
         }
+
+        if (faceTriangleCount > 0)
+        {
+            vsg::vec3 avgNormal(
+                static_cast<float>(nx / faceTriangleCount),
+                static_cast<float>(ny / faceTriangleCount),
+                static_cast<float>(nz / faceTriangleCount));
+            float len = vsg::length(avgNormal);
+            if (len > 0.0f) avgNormal = avgNormal / len;
+
+            buffers.faces.faces.push_back({currentFaceId, faceTriangleOffset, faceTriangleCount, avgNormal});
+        }
     }
 }
 } // namespace
 
-MeshResult triangulate(const TopoDS_Shape& shape, const MeshOptions& options)
+MeshResult triangulate(const TopoDS_Shape& shape, uint32_t& nextFaceId, const MeshOptions& options)
 {
     const double linearDeflection = options.linearDeflection > 0.0
                                         ? options.linearDeflection
@@ -379,7 +403,7 @@ MeshResult triangulate(const TopoDS_Shape& shape, const MeshOptions& options)
     SceneBuffers buffers;
     extractPoints(shape, buffers);
     extractLines(shape, linearDeflection, buffers);
-    extractFaces(shape, buffers);
+    extractFaces(shape, buffers, nextFaceId);
 
     if (!buffers.hasGeometry())
     {
@@ -396,6 +420,8 @@ MeshResult triangulate(const TopoDS_Shape& shape, const MeshOptions& options)
     result.triangleCount = buffers.faces.triangleCount;
     result.boundsMin = buffers.bounds.min;
     result.boundsMax = buffers.bounds.max;
+    result.faces = std::move(buffers.faces.faces);
+    result.perTriangleFaceId = std::move(buffers.faces.perTriangleFaceId);
     return result;
 }
 } // namespace vsgocct::mesh

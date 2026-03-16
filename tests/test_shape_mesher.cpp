@@ -97,3 +97,57 @@ TEST_F(ShapeMesherTest, EmptyShape)
     TopoDS_Shape empty;
     EXPECT_ANY_THROW(triangulate(empty));
 }
+
+TEST_F(ShapeMesherTest, TriangulateWithFaceIds)
+{
+    uint32_t nextFaceId = 1;
+    auto result = triangulate(boxShape, nextFaceId);
+
+    // A box has 6 faces
+    EXPECT_EQ(result.faces.size(), 6u);
+    EXPECT_EQ(nextFaceId, 7u);
+
+    for (const auto& face : result.faces)
+    {
+        EXPECT_GT(face.faceId, 0u);
+        EXPECT_GT(face.triangleCount, 0u);
+    }
+}
+
+TEST_F(ShapeMesherTest, PerTriangleFaceIdParallelToTriangles)
+{
+    uint32_t nextFaceId = 1;
+    auto result = triangulate(boxShape, nextFaceId);
+
+    EXPECT_EQ(result.perTriangleFaceId.size(), result.triangleCount);
+
+    for (auto id : result.perTriangleFaceId)
+    {
+        EXPECT_GE(id, 1u);
+        EXPECT_LT(id, nextFaceId);
+    }
+}
+
+TEST_F(ShapeMesherTest, FaceDataTriangleOffsetsAreConsistent)
+{
+    uint32_t nextFaceId = 1;
+    auto result = triangulate(boxShape, nextFaceId);
+
+    uint32_t totalFromFaces = 0;
+    for (const auto& face : result.faces)
+    {
+        EXPECT_EQ(face.triangleOffset, totalFromFaces);
+        totalFromFaces += face.triangleCount;
+    }
+    EXPECT_EQ(totalFromFaces, static_cast<uint32_t>(result.triangleCount));
+}
+
+TEST_F(ShapeMesherTest, GlobalFaceIdContinuesAcrossCalls)
+{
+    uint32_t nextFaceId = 1;
+    auto result1 = triangulate(boxShape, nextFaceId);
+    uint32_t afterFirst = nextFaceId;
+
+    auto result2 = triangulate(boxShape, nextFaceId);
+    EXPECT_EQ(result2.faces.front().faceId, afterFirst);
+}

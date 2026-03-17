@@ -252,3 +252,68 @@ TEST(AssemblySceneSimple, PrimitiveSelectionTransitionsAcrossKinds)
     EXPECT_EQ(sceneData.selectedToken.kind, vsgocct::selection::PrimitiveKind::None);
     EXPECT_TRUE(sameColor((*part.pointColors)[pointSpan.firstPoint], basePointColor));
 }
+
+TEST(AssemblySceneSimple, HoverOverridesSelectedPartAndClearsBackToSelection)
+{
+    auto assembly = readStep(testDataPath("box.step"));
+    auto sceneData = buildAssemblyScene(assembly);
+    ASSERT_FALSE(sceneData.parts.empty());
+
+    auto& part = sceneData.parts.front();
+    ASSERT_TRUE(part.faceColors);
+    ASSERT_GE(part.faceSpans.size(), 2u);
+
+    vsgocct::selection::SelectionToken selectedPartToken;
+    selectedPartToken.partId = part.partId;
+    selectedPartToken.kind = vsgocct::selection::PrimitiveKind::Part;
+    selectedPartToken.primitiveId = part.partId;
+    ASSERT_TRUE(setSelection(sceneData, selectedPartToken));
+
+    const auto selectedPartColor = (*part.faceColors)[0];
+    const auto hoverSpan = part.faceSpans.front();
+    const auto otherSpan = part.faceSpans.back();
+
+    vsgocct::selection::SelectionToken hoverFaceToken;
+    hoverFaceToken.partId = part.partId;
+    hoverFaceToken.kind = vsgocct::selection::PrimitiveKind::Face;
+    hoverFaceToken.primitiveId = hoverSpan.faceId;
+    ASSERT_TRUE(setHoverSelection(sceneData, hoverFaceToken));
+    EXPECT_EQ(sceneData.hoverToken.kind, vsgocct::selection::PrimitiveKind::Face);
+
+    const auto hoverFaceColor = (*part.faceColors)[hoverSpan.firstTriangle * 3u];
+    EXPECT_FALSE(sameColor(hoverFaceColor, selectedPartColor));
+    expectColorRange(part.faceColors, hoverSpan.firstTriangle * 3u, hoverSpan.triangleCount * 3u, hoverFaceColor);
+    EXPECT_TRUE(sameColor((*part.faceColors)[otherSpan.firstTriangle * 3u], selectedPartColor));
+
+    clearHoverSelection(sceneData);
+    EXPECT_EQ(sceneData.hoverToken.kind, vsgocct::selection::PrimitiveKind::None);
+    EXPECT_TRUE(sameColor((*part.faceColors)[hoverSpan.firstTriangle * 3u], selectedPartColor));
+    EXPECT_TRUE(sameColor((*part.faceColors)[otherSpan.firstTriangle * 3u], selectedPartColor));
+}
+
+TEST(AssemblySceneSimple, MatchingHoverDoesNotOverrideSelectedPrimitive)
+{
+    auto assembly = readStep(testDataPath("box.step"));
+    auto sceneData = buildAssemblyScene(assembly);
+    ASSERT_FALSE(sceneData.parts.empty());
+
+    auto& part = sceneData.parts.front();
+    ASSERT_TRUE(part.faceColors);
+    ASSERT_FALSE(part.faceSpans.empty());
+
+    const auto faceSpan = part.faceSpans.front();
+    vsgocct::selection::SelectionToken faceToken;
+    faceToken.partId = part.partId;
+    faceToken.kind = vsgocct::selection::PrimitiveKind::Face;
+    faceToken.primitiveId = faceSpan.faceId;
+
+    ASSERT_TRUE(setSelection(sceneData, faceToken));
+    const auto selectedColor = (*part.faceColors)[faceSpan.firstTriangle * 3u];
+
+    ASSERT_TRUE(setHoverSelection(sceneData, faceToken));
+    EXPECT_EQ(sceneData.hoverToken.kind, vsgocct::selection::PrimitiveKind::Face);
+    EXPECT_TRUE(sameColor((*part.faceColors)[faceSpan.firstTriangle * 3u], selectedColor));
+
+    clearHoverSelection(sceneData);
+    EXPECT_TRUE(sameColor((*part.faceColors)[faceSpan.firstTriangle * 3u], selectedColor));
+}

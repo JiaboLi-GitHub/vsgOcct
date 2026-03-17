@@ -49,6 +49,7 @@ struct AssemblySceneData
 
     uint32_t selectedPartId = InvalidPartId;
     selection::SelectionToken selectedToken;
+    selection::SelectionToken hoverToken;
 };
 
 AssemblySceneData buildAssemblyScene(
@@ -61,6 +62,9 @@ const PartSceneNode* findPart(const AssemblySceneData& sceneData, uint32_t partI
 
 bool setSelection(AssemblySceneData& sceneData, const selection::SelectionToken& token);
 void clearSelection(AssemblySceneData& sceneData);
+
+bool setHoverSelection(AssemblySceneData& sceneData, const selection::SelectionToken& token);
+void clearHoverSelection(AssemblySceneData& sceneData);
 
 bool setSelectedPart(AssemblySceneData& sceneData, uint32_t partId);
 void clearSelectedPart(AssemblySceneData& sceneData);

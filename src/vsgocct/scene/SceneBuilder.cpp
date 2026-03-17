@@ -22,6 +22,29 @@ const vsg::vec3 SELECTED_PART_COLOR = vsg::vec3(1.0f, 0.92f, 0.18f);
 const vsg::vec3 SELECTED_FACE_COLOR = vsg::vec3(1.0f, 0.66f, 0.18f);
 const vsg::vec3 SELECTED_EDGE_COLOR = vsg::vec3(0.10f, 0.90f, 1.0f);
 const vsg::vec3 SELECTED_VERTEX_COLOR = vsg::vec3(1.0f, 0.15f, 0.55f);
+const vsg::vec3 HOVER_PART_COLOR = vsg::vec3(0.62f, 0.92f, 0.22f);
+const vsg::vec3 HOVER_FACE_COLOR = vsg::vec3(0.42f, 0.96f, 0.34f);
+const vsg::vec3 HOVER_EDGE_COLOR = vsg::vec3(1.0f, 0.86f, 0.12f);
+const vsg::vec3 HOVER_VERTEX_COLOR = vsg::vec3(0.38f, 0.84f, 1.0f);
+
+struct HighlightPalette
+{
+    vsg::vec3 partColor;
+    vsg::vec3 faceColor;
+    vsg::vec3 edgeColor;
+    vsg::vec3 vertexColor;
+};
+
+const HighlightPalette SELECTED_PALETTE{
+    SELECTED_PART_COLOR,
+    SELECTED_FACE_COLOR,
+    SELECTED_EDGE_COLOR,
+    SELECTED_VERTEX_COLOR};
+const HighlightPalette HOVER_PALETTE{
+    HOVER_PART_COLOR,
+    HOVER_FACE_COLOR,
+    HOVER_EDGE_COLOR,
+    HOVER_VERTEX_COLOR};
 
 // Per-vertex color approach: color is stored as a vertex attribute (binding 2)
 // rather than push constants, because VSG auto-pushes only projection+modelView
@@ -378,7 +401,7 @@ void restoreBaseColors(PartSceneNode& part)
     applyColor(part.pointColors, BASE_VERTEX_COLOR);
 }
 
-bool applyFaceHighlight(PartSceneNode& part, uint32_t faceId)
+bool applyFaceHighlight(PartSceneNode& part, uint32_t faceId, const vsg::vec3& color)
 {
     bool highlighted = false;
     for (const auto& span : part.faceSpans)
@@ -388,13 +411,13 @@ bool applyFaceHighlight(PartSceneNode& part, uint32_t faceId)
             continue;
         }
 
-        applyColorRange(part.faceColors, span.firstTriangle * 3u, span.triangleCount * 3u, SELECTED_FACE_COLOR);
+        applyColorRange(part.faceColors, span.firstTriangle * 3u, span.triangleCount * 3u, color);
         highlighted = true;
     }
     return highlighted;
 }
 
-bool applyEdgeHighlight(PartSceneNode& part, uint32_t edgeId)
+bool applyEdgeHighlight(PartSceneNode& part, uint32_t edgeId, const vsg::vec3& color)
 {
     bool highlighted = false;
     for (const auto& span : part.lineSpans)
@@ -404,13 +427,13 @@ bool applyEdgeHighlight(PartSceneNode& part, uint32_t edgeId)
             continue;
         }
 
-        applyColorRange(part.lineColors, span.firstSegment * 2u, span.segmentCount * 2u, SELECTED_EDGE_COLOR);
+        applyColorRange(part.lineColors, span.firstSegment * 2u, span.segmentCount * 2u, color);
         highlighted = true;
     }
     return highlighted;
 }
 
-bool applyVertexHighlight(PartSceneNode& part, uint32_t vertexId)
+bool applyVertexHighlight(PartSceneNode& part, uint32_t vertexId, const vsg::vec3& color)
 {
     bool highlighted = false;
     for (const auto& span : part.pointSpans)
@@ -420,7 +443,7 @@ bool applyVertexHighlight(PartSceneNode& part, uint32_t vertexId)
             continue;
         }
 
-        applyColorRange(part.pointColors, span.firstPoint, span.pointCount, SELECTED_VERTEX_COLOR);
+        applyColorRange(part.pointColors, span.firstPoint, span.pointCount, color);
         highlighted = true;
     }
     return highlighted;
@@ -433,23 +456,56 @@ bool sameSelection(const selection::SelectionToken& lhs, const selection::Select
            lhs.primitiveId == rhs.primitiveId;
 }
 
-bool applySelectionHighlight(PartSceneNode& part, const selection::SelectionToken& token)
+bool applySelectionHighlight(PartSceneNode& part,
+                             const selection::SelectionToken& token,
+                             const HighlightPalette& palette)
 {
     switch (token.kind)
     {
     case selection::PrimitiveKind::Part:
-        applyColor(part.faceColors, SELECTED_PART_COLOR);
+        applyColor(part.faceColors, palette.partColor);
         return true;
     case selection::PrimitiveKind::Face:
-        return applyFaceHighlight(part, token.primitiveId);
+        return applyFaceHighlight(part, token.primitiveId, palette.faceColor);
     case selection::PrimitiveKind::Edge:
-        return applyEdgeHighlight(part, token.primitiveId);
+        return applyEdgeHighlight(part, token.primitiveId, palette.edgeColor);
     case selection::PrimitiveKind::Vertex:
-        return applyVertexHighlight(part, token.primitiveId);
+        return applyVertexHighlight(part, token.primitiveId, palette.vertexColor);
     case selection::PrimitiveKind::None:
     default:
         return false;
     }
+}
+
+void appendPartId(std::vector<uint32_t>& partIds, uint32_t partId)
+{
+    if (partId == InvalidPartId ||
+        std::find(partIds.begin(), partIds.end(), partId) != partIds.end())
+    {
+        return;
+    }
+
+    partIds.push_back(partId);
+}
+
+std::vector<uint32_t> collectAffectedPartIds(const selection::SelectionToken& first,
+                                             const selection::SelectionToken& second = {},
+                                             const selection::SelectionToken& third = {})
+{
+    std::vector<uint32_t> partIds;
+    if (first)
+    {
+        appendPartId(partIds, first.partId);
+    }
+    if (second)
+    {
+        appendPartId(partIds, second.partId);
+    }
+    if (third)
+    {
+        appendPartId(partIds, third.partId);
+    }
+    return partIds;
 }
 
 struct BoundsAccumulator
@@ -626,6 +682,33 @@ const PartSceneNode* findPart(const AssemblySceneData& sceneData, uint32_t partI
     return itr != sceneData.parts.end() ? &(*itr) : nullptr;
 }
 
+void rebuildHighlights(AssemblySceneData& sceneData, const std::vector<uint32_t>& affectedPartIds)
+{
+    for (uint32_t partId : affectedPartIds)
+    {
+        if (PartSceneNode* part = findPart(sceneData, partId))
+        {
+            restoreBaseColors(*part);
+        }
+    }
+
+    if (sceneData.selectedToken)
+    {
+        if (PartSceneNode* part = findPart(sceneData, sceneData.selectedToken.partId))
+        {
+            applySelectionHighlight(*part, sceneData.selectedToken, SELECTED_PALETTE);
+        }
+    }
+
+    if (sceneData.hoverToken && !sameSelection(sceneData.hoverToken, sceneData.selectedToken))
+    {
+        if (PartSceneNode* part = findPart(sceneData, sceneData.hoverToken.partId))
+        {
+            applySelectionHighlight(*part, sceneData.hoverToken, HOVER_PALETTE);
+        }
+    }
+}
+
 bool setSelectedPart(AssemblySceneData& sceneData, uint32_t partId)
 {
     selection::SelectionToken token;
@@ -658,31 +741,82 @@ bool setSelection(AssemblySceneData& sceneData, const selection::SelectionToken&
         return true;
     }
 
-    clearSelection(sceneData);
-    if (!applySelectionHighlight(*part, token))
+    std::vector<uint32_t> affectedPartIds = collectAffectedPartIds(
+        sceneData.selectedToken,
+        sceneData.hoverToken,
+        token);
+
+    if (!applySelectionHighlight(*part, token, SELECTED_PALETTE))
     {
         return false;
     }
 
     sceneData.selectedPartId = token.partId;
     sceneData.selectedToken = token;
+    rebuildHighlights(sceneData, affectedPartIds);
     return true;
 }
 
 void clearSelection(AssemblySceneData& sceneData)
 {
-    if (sceneData.selectedPartId == InvalidPartId)
+    if (!sceneData.selectedToken)
     {
-        sceneData.selectedToken = {};
+        sceneData.selectedPartId = InvalidPartId;
         return;
     }
 
-    if (PartSceneNode* part = findPart(sceneData, sceneData.selectedPartId))
-    {
-        restoreBaseColors(*part);
-    }
-
+    std::vector<uint32_t> affectedPartIds = collectAffectedPartIds(
+        sceneData.selectedToken,
+        sceneData.hoverToken);
     sceneData.selectedPartId = InvalidPartId;
     sceneData.selectedToken = {};
+    rebuildHighlights(sceneData, affectedPartIds);
+}
+
+bool setHoverSelection(AssemblySceneData& sceneData, const selection::SelectionToken& token)
+{
+    if (!token)
+    {
+        return false;
+    }
+
+    PartSceneNode* part = findPart(sceneData, token.partId);
+    if (!part)
+    {
+        return false;
+    }
+
+    if (sameSelection(sceneData.hoverToken, token))
+    {
+        return true;
+    }
+
+    std::vector<uint32_t> affectedPartIds = collectAffectedPartIds(
+        sceneData.selectedToken,
+        sceneData.hoverToken,
+        token);
+
+    if (!applySelectionHighlight(*part, token, HOVER_PALETTE))
+    {
+        return false;
+    }
+
+    sceneData.hoverToken = token;
+    rebuildHighlights(sceneData, affectedPartIds);
+    return true;
+}
+
+void clearHoverSelection(AssemblySceneData& sceneData)
+{
+    if (!sceneData.hoverToken)
+    {
+        return;
+    }
+
+    std::vector<uint32_t> affectedPartIds = collectAffectedPartIds(
+        sceneData.selectedToken,
+        sceneData.hoverToken);
+    sceneData.hoverToken = {};
+    rebuildHighlights(sceneData, affectedPartIds);
 }
 } // namespace vsgocct::scene

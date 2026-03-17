@@ -22,6 +22,7 @@
 #include <cmath>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 
 namespace
 {
@@ -80,6 +81,14 @@ QString primitiveKindLabel(vsgocct::selection::PrimitiveKind kind)
     default:
         return QStringLiteral("None");
     }
+}
+
+bool sameToken(const vsgocct::selection::SelectionToken& lhs,
+               const vsgocct::selection::SelectionToken& rhs)
+{
+    return lhs.partId == rhs.partId &&
+           lhs.kind == rhs.kind &&
+           lhs.primitiveId == rhs.primitiveId;
 }
 
 struct RenderWindowContext
@@ -152,6 +161,18 @@ public:
         pressed_ = true;
         pressX_ = buttonPress.x;
         pressY_ = buttonPress.y;
+        syncStatusAndRefresh(clearHoverState());
+    }
+
+    void apply(vsg::MoveEvent& moveEvent) override
+    {
+        if (moveEvent.mask != vsg::BUTTON_MASK_OFF || pressed_)
+        {
+            syncStatusAndRefresh(clearHoverState());
+            return;
+        }
+
+        updateHover(moveEvent.x, moveEvent.y);
     }
 
     void apply(vsg::ButtonReleaseEvent& buttonRelease) override
@@ -167,36 +188,60 @@ public:
         const double dragDistance = std::sqrt(static_cast<double>(deltaX * deltaX + deltaY * deltaY));
         if (dragDistance > 3.0)
         {
+            updateHover(buttonRelease.x, buttonRelease.y);
             return;
         }
 
+        const bool hoverChanged = clearHoverState();
         const auto pickResult = vsgocct::selection::pick(*camera_, sceneData_, buttonRelease.x, buttonRelease.y);
         if (!pickResult)
         {
-            vsgocct::scene::clearSelection(sceneData_);
-            showDefaultStatus();
-            requestRefresh();
+            const bool selectionChanged = clearSelectionState();
+            syncStatusAndRefresh(hoverChanged || selectionChanged);
             return;
         }
 
-        vsgocct::scene::setSelection(sceneData_, pickResult->token);
-        showPickResult(*pickResult);
-        requestRefresh();
+        const bool tokenChanged = !sameToken(sceneData_.selectedToken, pickResult->token);
+        if (!vsgocct::scene::setSelection(sceneData_, pickResult->token))
+        {
+            syncStatusAndRefresh(hoverChanged);
+            return;
+        }
+
+        selectedPick_ = *pickResult;
+        syncStatusAndRefresh(hoverChanged || tokenChanged);
     }
 
     void showDefaultStatus() const
     {
-        if (statusBar_)
-        {
-            statusBar_->showMessage(defaultStatusMessage(sceneData_));
-        }
+        refreshStatus();
     }
 
     void clearSelection()
     {
-        vsgocct::scene::clearSelection(sceneData_);
-        showDefaultStatus();
-        requestRefresh();
+        syncStatusAndRefresh(clearSelectionState());
+    }
+
+    void clearHover()
+    {
+        syncStatusAndRefresh(clearHoverState());
+    }
+
+    void clearPartState(uint32_t partId)
+    {
+        bool changed = false;
+
+        if (sceneData_.selectedToken && sceneData_.selectedToken.partId == partId)
+        {
+            changed = clearSelectionState() || changed;
+        }
+
+        if (sceneData_.hoverToken && sceneData_.hoverToken.partId == partId)
+        {
+            changed = clearHoverState() || changed;
+        }
+
+        syncStatusAndRefresh(changed);
     }
 
     void requestRefresh() const
@@ -208,31 +253,120 @@ public:
     }
 
 private:
-    void showPickResult(const vsgocct::selection::PickResult& pickResult) const
+    QString describePick(const QString& prefix, const vsgocct::selection::PickResult& pickResult) const
+    {
+        const auto* part = vsgocct::scene::findPart(sceneData_, pickResult.token.partId);
+        const QString label = part
+                                  ? partLabel(*part, static_cast<int>(pickResult.token.partId + 1))
+                                  : QStringLiteral("(unknown part)");
+        return QStringLiteral("%1 %2 %3 | %4")
+            .arg(prefix)
+            .arg(primitiveKindLabel(pickResult.token.kind))
+            .arg(static_cast<qulonglong>(pickResult.token.primitiveId))
+            .arg(label);
+    }
+
+    void refreshStatus() const
     {
         if (!statusBar_)
         {
             return;
         }
 
-        const auto* part = vsgocct::scene::findPart(sceneData_, pickResult.token.partId);
-        const QString label = part
-                                  ? partLabel(*part, static_cast<int>(pickResult.token.partId + 1))
-                                  : QStringLiteral("(unknown part)");
-        statusBar_->showMessage(
-            QStringLiteral("Selected %1 %2 | %3 | Hit (%4, %5, %6)")
-                .arg(primitiveKindLabel(pickResult.token.kind))
-                .arg(static_cast<qulonglong>(pickResult.token.primitiveId))
-                .arg(label)
-                .arg(pickResult.worldIntersection.x, 0, 'f', 3)
-                .arg(pickResult.worldIntersection.y, 0, 'f', 3)
-                .arg(pickResult.worldIntersection.z, 0, 'f', 3));
+        if (hoverPick_)
+        {
+            QString message = QStringLiteral("%1 | Hit (%2, %3, %4)")
+                .arg(describePick(QStringLiteral("Hover"), *hoverPick_))
+                .arg(hoverPick_->worldIntersection.x, 0, 'f', 3)
+                .arg(hoverPick_->worldIntersection.y, 0, 'f', 3)
+                .arg(hoverPick_->worldIntersection.z, 0, 'f', 3);
+
+            if (selectedPick_ && !sameToken(selectedPick_->token, hoverPick_->token))
+            {
+                message += QStringLiteral(" | %1")
+                    .arg(describePick(QStringLiteral("Selected"), *selectedPick_));
+            }
+
+            statusBar_->showMessage(message);
+            return;
+        }
+
+        if (selectedPick_)
+        {
+            statusBar_->showMessage(
+                QStringLiteral("%1 | Hit (%2, %3, %4)")
+                    .arg(describePick(QStringLiteral("Selected"), *selectedPick_))
+                    .arg(selectedPick_->worldIntersection.x, 0, 'f', 3)
+                    .arg(selectedPick_->worldIntersection.y, 0, 'f', 3)
+                    .arg(selectedPick_->worldIntersection.z, 0, 'f', 3));
+            return;
+        }
+
+        statusBar_->showMessage(defaultStatusMessage(sceneData_));
+    }
+
+    void syncStatusAndRefresh(bool changed)
+    {
+        refreshStatus();
+        if (changed)
+        {
+            requestRefresh();
+        }
+    }
+
+    bool clearSelectionState()
+    {
+        if (!sceneData_.selectedToken && !selectedPick_)
+        {
+            return false;
+        }
+
+        vsgocct::scene::clearSelection(sceneData_);
+        selectedPick_.reset();
+        return true;
+    }
+
+    bool clearHoverState()
+    {
+        if (!sceneData_.hoverToken && !hoverPick_)
+        {
+            return false;
+        }
+
+        vsgocct::scene::clearHoverSelection(sceneData_);
+        hoverPick_.reset();
+        return true;
+    }
+
+    void updateHover(int32_t x, int32_t y)
+    {
+        const auto pickResult = vsgocct::selection::pick(*camera_, sceneData_, x, y);
+        if (!pickResult || sameToken(pickResult->token, sceneData_.selectedToken))
+        {
+            syncStatusAndRefresh(clearHoverState());
+            return;
+        }
+
+        const bool tokenChanged = !sameToken(sceneData_.hoverToken, pickResult->token);
+        if (tokenChanged)
+        {
+            if (!vsgocct::scene::setHoverSelection(sceneData_, pickResult->token))
+            {
+                syncStatusAndRefresh(clearHoverState());
+                return;
+            }
+        }
+
+        hoverPick_ = *pickResult;
+        syncStatusAndRefresh(tokenChanged);
     }
 
     vsg::ref_ptr<vsgQt::Viewer> viewer_;
     vsg::ref_ptr<vsg::Camera> camera_;
     vsgocct::scene::AssemblySceneData& sceneData_;
     QStatusBar* statusBar_ = nullptr;
+    std::optional<vsgocct::selection::PickResult> selectedPick_;
+    std::optional<vsgocct::selection::PickResult> hoverPick_;
     bool pressed_ = false;
     int pressX_ = 0;
     int pressY_ = 0;
@@ -391,9 +525,11 @@ int main(int argc, char* argv[])
                         switchNode->children.front().mask = visible ? vsg::MASK_ALL : vsg::MASK_OFF;
                     }
 
-                    if (!visible && sceneData.selectedPartId == partId)
+                    if (!visible &&
+                        ((sceneData.selectedToken && sceneData.selectedToken.partId == partId) ||
+                         (sceneData.hoverToken && sceneData.hoverToken.partId == partId)))
                     {
-                        selectionHandler->clearSelection();
+                        selectionHandler->clearPartState(partId);
                     }
                     else
                     {

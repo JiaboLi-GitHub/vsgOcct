@@ -10,6 +10,7 @@
 
 #include <vsgocct/cad/StepReader.h>
 #include <vsgocct/mesh/ShapeMesher.h>
+#include <vsgocct/selection/SelectionToken.h>
 
 namespace vsgocct::scene
 {
@@ -25,6 +26,8 @@ struct PartSceneNode
     vsg::ref_ptr<vsg::Switch> switchNode;
     vsg::vec3 baseColor;
     vsg::ref_ptr<vsg::vec3Array> faceColors;
+    vsg::ref_ptr<vsg::vec3Array> lineColors;
+    vsg::ref_ptr<vsg::vec3Array> pointColors;
     std::vector<mesh::PointSpan> pointSpans;
     std::vector<mesh::LineSpan> lineSpans;
     std::vector<mesh::FaceSpan> faceSpans;
@@ -45,6 +48,7 @@ struct AssemblySceneData
     std::size_t totalPointCount = 0;
 
     uint32_t selectedPartId = InvalidPartId;
+    selection::SelectionToken selectedToken;
 };
 
 AssemblySceneData buildAssemblyScene(
@@ -54,6 +58,9 @@ AssemblySceneData buildAssemblyScene(
 
 PartSceneNode* findPart(AssemblySceneData& sceneData, uint32_t partId);
 const PartSceneNode* findPart(const AssemblySceneData& sceneData, uint32_t partId);
+
+bool setSelection(AssemblySceneData& sceneData, const selection::SelectionToken& token);
+void clearSelection(AssemblySceneData& sceneData);
 
 bool setSelectedPart(AssemblySceneData& sceneData, uint32_t partId);
 void clearSelectedPart(AssemblySceneData& sceneData);

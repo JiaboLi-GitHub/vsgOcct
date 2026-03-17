@@ -173,13 +173,13 @@ public:
         const auto pickResult = vsgocct::selection::pick(*camera_, sceneData_, buttonRelease.x, buttonRelease.y);
         if (!pickResult)
         {
-            vsgocct::scene::clearSelectedPart(sceneData_);
+            vsgocct::scene::clearSelection(sceneData_);
             showDefaultStatus();
             requestRefresh();
             return;
         }
 
-        vsgocct::scene::setSelectedPart(sceneData_, pickResult->token.partId);
+        vsgocct::scene::setSelection(sceneData_, pickResult->token);
         showPickResult(*pickResult);
         requestRefresh();
     }
@@ -194,7 +194,7 @@ public:
 
     void clearSelection()
     {
-        vsgocct::scene::clearSelectedPart(sceneData_);
+        vsgocct::scene::clearSelection(sceneData_);
         showDefaultStatus();
         requestRefresh();
     }

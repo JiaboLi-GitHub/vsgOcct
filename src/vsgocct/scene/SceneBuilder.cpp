@@ -16,7 +16,12 @@ namespace
 {
 constexpr const char* PART_ID_KEY = "vsgocct.partId";
 constexpr const char* PRIMITIVE_KIND_KEY = "vsgocct.primitiveKind";
+const vsg::vec3 BASE_EDGE_COLOR = vsg::vec3(0.12f, 0.25f, 0.40f);
+const vsg::vec3 BASE_VERTEX_COLOR = vsg::vec3(0.90f, 0.40f, 0.12f);
 const vsg::vec3 SELECTED_PART_COLOR = vsg::vec3(1.0f, 0.92f, 0.18f);
+const vsg::vec3 SELECTED_FACE_COLOR = vsg::vec3(1.0f, 0.66f, 0.18f);
+const vsg::vec3 SELECTED_EDGE_COLOR = vsg::vec3(0.10f, 0.90f, 1.0f);
+const vsg::vec3 SELECTED_VERTEX_COLOR = vsg::vec3(1.0f, 0.15f, 0.55f);
 
 // Per-vertex color approach: color is stored as a vertex attribute (binding 2)
 // rather than push constants, because VSG auto-pushes only projection+modelView
@@ -82,6 +87,8 @@ layout(push_constant) uniform PushConstants
 };
 
 layout(location = 0) in vec3 vertex;
+layout(location = 1) in vec3 inColor;
+layout(location = 0) out vec3 lineColor;
 
 out gl_PerVertex
 {
@@ -91,6 +98,7 @@ out gl_PerVertex
 void main()
 {
     vec4 viewVertex = modelView * vec4(vertex, 1.0);
+    lineColor = inColor;
     gl_Position = projection * viewVertex;
 }
 )";
@@ -99,11 +107,12 @@ constexpr const char* LINE_FRAG_SHADER = R"(
 #version 450
 #extension GL_ARB_separate_shader_objects : enable
 
+layout(location = 0) in vec3 lineColor;
 layout(location = 0) out vec4 fragmentColor;
 
 void main()
 {
-    fragmentColor = vec4(vec3(0.12, 0.25, 0.40), 1.0);
+    fragmentColor = vec4(lineColor, 1.0);
 }
 )";
 
@@ -118,6 +127,8 @@ layout(push_constant) uniform PushConstants
 };
 
 layout(location = 0) in vec3 vertex;
+layout(location = 1) in vec3 inColor;
+layout(location = 0) out vec3 pointColor;
 
 out gl_PerVertex
 {
@@ -128,6 +139,7 @@ out gl_PerVertex
 void main()
 {
     vec4 viewVertex = modelView * vec4(vertex, 1.0);
+    pointColor = inColor;
     gl_Position = projection * viewVertex;
     gl_PointSize = 7.0;
 }
@@ -137,6 +149,7 @@ constexpr const char* POINT_FRAG_SHADER = R"(
 #version 450
 #extension GL_ARB_separate_shader_objects : enable
 
+layout(location = 0) in vec3 pointColor;
 layout(location = 0) out vec4 fragmentColor;
 
 void main()
@@ -147,7 +160,7 @@ void main()
         discard;
     }
 
-    fragmentColor = vec4(vec3(0.90, 0.40, 0.12), 1.0);
+    fragmentColor = vec4(pointColor, 1.0);
 }
 )";
 
@@ -230,9 +243,16 @@ void tagNode(const vsg::ref_ptr<vsg::Node>& node,
     node->setValue(PRIMITIVE_KIND_KEY, static_cast<uint32_t>(primitiveKind));
 }
 
-vsg::ref_ptr<vsg::Node> createPositionOnlyNode(
+struct PrimitiveNodeBuild
+{
+    vsg::ref_ptr<vsg::Node> node;
+    vsg::ref_ptr<vsg::vec3Array> colors;
+};
+
+PrimitiveNodeBuild createPositionOnlyNode(
     const std::vector<vsg::vec3>& positions,
     const vsg::ref_ptr<vsg::BindGraphicsPipeline>& pipeline,
+    const vsg::vec3& color,
     uint32_t partId,
     selection::PrimitiveKind primitiveKind)
 {
@@ -241,27 +261,30 @@ vsg::ref_ptr<vsg::Node> createPositionOnlyNode(
 
     if (positions.empty())
     {
-        return stateGroup;
+        return {stateGroup, {}};
     }
 
     auto positionArray = vsg::vec3Array::create(static_cast<uint32_t>(positions.size()));
+    auto colors = vsg::vec3Array::create(static_cast<uint32_t>(positions.size()));
+    colors->properties.dataVariance = vsg::DYNAMIC_DATA;
     auto indices = vsg::uintArray::create(static_cast<uint32_t>(positions.size()));
 
     for (std::size_t index = 0; index < positions.size(); ++index)
     {
         (*positionArray)[static_cast<uint32_t>(index)] = positions[index];
+        (*colors)[static_cast<uint32_t>(index)] = color;
         (*indices)[static_cast<uint32_t>(index)] = static_cast<uint32_t>(index);
     }
 
     auto drawCommands = vsg::VertexIndexDraw::create();
-    drawCommands->assignArrays(vsg::DataList{positionArray});
+    drawCommands->assignArrays(vsg::DataList{positionArray, colors});
     drawCommands->assignIndices(indices);
     drawCommands->indexCount = indices->width();
     drawCommands->instanceCount = 1;
 
     stateGroup->add(pipeline);
     stateGroup->addChild(drawCommands);
-    return stateGroup;
+    return {stateGroup, colors};
 }
 
 struct FaceNodeBuild
@@ -316,7 +339,7 @@ FaceNodeBuild createFaceNode(
     return {stateGroup, colors};
 }
 
-void applyFaceColor(const vsg::ref_ptr<vsg::vec3Array>& colors, const vsg::vec3& color)
+void applyColor(const vsg::ref_ptr<vsg::vec3Array>& colors, const vsg::vec3& color)
 {
     if (!colors)
     {
@@ -328,6 +351,105 @@ void applyFaceColor(const vsg::ref_ptr<vsg::vec3Array>& colors, const vsg::vec3&
         currentColor = color;
     }
     colors->dirty();
+}
+
+void applyColorRange(const vsg::ref_ptr<vsg::vec3Array>& colors,
+                     uint32_t firstIndex,
+                     uint32_t count,
+                     const vsg::vec3& color)
+{
+    if (!colors || count == 0u || firstIndex >= colors->size())
+    {
+        return;
+    }
+
+    const uint32_t endIndex = std::min<uint32_t>(static_cast<uint32_t>(colors->size()), firstIndex + count);
+    for (uint32_t index = firstIndex; index < endIndex; ++index)
+    {
+        (*colors)[index] = color;
+    }
+    colors->dirty();
+}
+
+void restoreBaseColors(PartSceneNode& part)
+{
+    applyColor(part.faceColors, part.baseColor);
+    applyColor(part.lineColors, BASE_EDGE_COLOR);
+    applyColor(part.pointColors, BASE_VERTEX_COLOR);
+}
+
+bool applyFaceHighlight(PartSceneNode& part, uint32_t faceId)
+{
+    bool highlighted = false;
+    for (const auto& span : part.faceSpans)
+    {
+        if (span.faceId != faceId)
+        {
+            continue;
+        }
+
+        applyColorRange(part.faceColors, span.firstTriangle * 3u, span.triangleCount * 3u, SELECTED_FACE_COLOR);
+        highlighted = true;
+    }
+    return highlighted;
+}
+
+bool applyEdgeHighlight(PartSceneNode& part, uint32_t edgeId)
+{
+    bool highlighted = false;
+    for (const auto& span : part.lineSpans)
+    {
+        if (span.edgeId != edgeId)
+        {
+            continue;
+        }
+
+        applyColorRange(part.lineColors, span.firstSegment * 2u, span.segmentCount * 2u, SELECTED_EDGE_COLOR);
+        highlighted = true;
+    }
+    return highlighted;
+}
+
+bool applyVertexHighlight(PartSceneNode& part, uint32_t vertexId)
+{
+    bool highlighted = false;
+    for (const auto& span : part.pointSpans)
+    {
+        if (span.vertexId != vertexId)
+        {
+            continue;
+        }
+
+        applyColorRange(part.pointColors, span.firstPoint, span.pointCount, SELECTED_VERTEX_COLOR);
+        highlighted = true;
+    }
+    return highlighted;
+}
+
+bool sameSelection(const selection::SelectionToken& lhs, const selection::SelectionToken& rhs)
+{
+    return lhs.partId == rhs.partId &&
+           lhs.kind == rhs.kind &&
+           lhs.primitiveId == rhs.primitiveId;
+}
+
+bool applySelectionHighlight(PartSceneNode& part, const selection::SelectionToken& token)
+{
+    switch (token.kind)
+    {
+    case selection::PrimitiveKind::Part:
+        applyColor(part.faceColors, SELECTED_PART_COLOR);
+        return true;
+    case selection::PrimitiveKind::Face:
+        return applyFaceHighlight(part, token.primitiveId);
+    case selection::PrimitiveKind::Edge:
+        return applyEdgeHighlight(part, token.primitiveId);
+    case selection::PrimitiveKind::Vertex:
+        return applyVertexHighlight(part, token.primitiveId);
+    case selection::PrimitiveKind::None:
+    default:
+        return false;
+    }
 }
 
 struct BoundsAccumulator
@@ -392,21 +514,23 @@ void buildNodeSubgraph(
     auto lineNode = createPositionOnlyNode(
         meshResult.linePositions,
         createPrimitivePipeline(LINE_VERT_SHADER, LINE_FRAG_SHADER,
-                               VK_PRIMITIVE_TOPOLOGY_LINE_LIST, false, false, false),
+                               VK_PRIMITIVE_TOPOLOGY_LINE_LIST, false, true, false),
+        BASE_EDGE_COLOR,
         partId,
         selection::PrimitiveKind::Edge);
     auto pointNode = createPositionOnlyNode(
         meshResult.pointPositions,
         createPrimitivePipeline(POINT_VERT_SHADER, POINT_FRAG_SHADER,
-                               VK_PRIMITIVE_TOPOLOGY_POINT_LIST, false, false, false),
+                               VK_PRIMITIVE_TOPOLOGY_POINT_LIST, false, true, false),
+        BASE_VERTEX_COLOR,
         partId,
         selection::PrimitiveKind::Vertex);
 
     auto partGroup = vsg::Group::create();
     partGroup->setValue(PART_ID_KEY, partId);
     partGroup->addChild(faceNode.node);
-    partGroup->addChild(lineNode);
-    partGroup->addChild(pointNode);
+    partGroup->addChild(lineNode.node);
+    partGroup->addChild(pointNode.node);
 
     auto partSwitch = vsg::Switch::create();
     partSwitch->setValue(PART_ID_KEY, partId);
@@ -419,6 +543,8 @@ void buildNodeSubgraph(
     partSceneNode.switchNode = partSwitch;
     partSceneNode.baseColor = color;
     partSceneNode.faceColors = faceNode.colors;
+    partSceneNode.lineColors = lineNode.colors;
+    partSceneNode.pointColors = pointNode.colors;
     partSceneNode.pointSpans = std::move(meshResult.pointSpans);
     partSceneNode.lineSpans = std::move(meshResult.lineSpans);
     partSceneNode.faceSpans = std::move(meshResult.faceSpans);
@@ -502,35 +628,61 @@ const PartSceneNode* findPart(const AssemblySceneData& sceneData, uint32_t partI
 
 bool setSelectedPart(AssemblySceneData& sceneData, uint32_t partId)
 {
-    PartSceneNode* part = findPart(sceneData, partId);
+    selection::SelectionToken token;
+    token.partId = partId;
+    token.kind = selection::PrimitiveKind::Part;
+    token.primitiveId = partId;
+    return setSelection(sceneData, token);
+}
+
+void clearSelectedPart(AssemblySceneData& sceneData)
+{
+    clearSelection(sceneData);
+}
+
+bool setSelection(AssemblySceneData& sceneData, const selection::SelectionToken& token)
+{
+    if (!token)
+    {
+        return false;
+    }
+
+    PartSceneNode* part = findPart(sceneData, token.partId);
     if (!part)
     {
         return false;
     }
 
-    if (sceneData.selectedPartId == partId)
+    if (sameSelection(sceneData.selectedToken, token))
     {
         return true;
     }
 
-    clearSelectedPart(sceneData);
-    applyFaceColor(part->faceColors, SELECTED_PART_COLOR);
-    sceneData.selectedPartId = partId;
+    clearSelection(sceneData);
+    if (!applySelectionHighlight(*part, token))
+    {
+        return false;
+    }
+
+    sceneData.selectedPartId = token.partId;
+    sceneData.selectedToken = token;
     return true;
 }
 
-void clearSelectedPart(AssemblySceneData& sceneData)
+void clearSelection(AssemblySceneData& sceneData)
 {
     if (sceneData.selectedPartId == InvalidPartId)
     {
+        sceneData.selectedToken = {};
         return;
     }
 
     if (PartSceneNode* part = findPart(sceneData, sceneData.selectedPartId))
     {
-        applyFaceColor(part->faceColors, part->baseColor);
+        restoreBaseColors(*part);
     }
 
     sceneData.selectedPartId = InvalidPartId;
+    sceneData.selectedToken = {};
 }
 } // namespace vsgocct::scene

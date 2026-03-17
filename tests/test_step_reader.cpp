@@ -82,6 +82,36 @@ TEST(StepReader, ColoredBoxHasColor)
     EXPECT_NEAR(root.color.b, 0.0f, 0.01f);
 }
 
+TEST(StepReader, ColoredBoxBuildsFallbackVisualMaterial)
+{
+    auto assembly = readStep(testDataPath("colored_box.step"));
+    ASSERT_FALSE(assembly.roots.empty());
+
+    const auto& root = assembly.roots.front();
+    EXPECT_EQ(root.visualMaterial.source, ShapeVisualMaterialSource::ColorFallback);
+    EXPECT_FALSE(root.visualMaterial.hasPbr);
+    EXPECT_NEAR(root.visualMaterial.baseColorFactor[0], 1.0f, 0.01f);
+    EXPECT_NEAR(root.visualMaterial.baseColorFactor[1], 0.0f, 0.01f);
+    EXPECT_NEAR(root.visualMaterial.baseColorFactor[2], 0.0f, 0.01f);
+    EXPECT_NEAR(root.visualMaterial.baseColorFactor[3], 1.0f, 0.01f);
+    EXPECT_NEAR(root.visualMaterial.metallicFactor, 0.0f, 0.01f);
+    EXPECT_NEAR(root.visualMaterial.roughnessFactor, 0.65f, 0.01f);
+}
+
+TEST(StepReader, PlainBoxKeepsDefaultVisualMaterial)
+{
+    auto assembly = readStep(testDataPath("box.step"));
+    ASSERT_FALSE(assembly.roots.empty());
+
+    const auto& root = assembly.roots.front();
+    EXPECT_EQ(root.visualMaterial.source, ShapeVisualMaterialSource::Default);
+    EXPECT_FALSE(root.visualMaterial.hasPbr);
+    EXPECT_NEAR(root.visualMaterial.baseColorFactor[0], 0.74f, 0.01f);
+    EXPECT_NEAR(root.visualMaterial.baseColorFactor[1], 0.79f, 0.01f);
+    EXPECT_NEAR(root.visualMaterial.baseColorFactor[2], 0.86f, 0.01f);
+    EXPECT_NEAR(root.visualMaterial.baseColorFactor[3], 1.0f, 0.01f);
+}
+
 TEST(StepReader, ColoredBoxHasName)
 {
     auto assembly = readStep(testDataPath("colored_box.step"));

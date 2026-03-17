@@ -20,6 +20,14 @@ bool sameColor(const vsg::vec3& lhs, const vsg::vec3& rhs)
            std::fabs(lhs.b - rhs.b) < 1e-6f;
 }
 
+bool sameColor(const vsg::vec4& lhs, const vsg::vec4& rhs)
+{
+    return std::fabs(lhs.r - rhs.r) < 1e-6f &&
+           std::fabs(lhs.g - rhs.g) < 1e-6f &&
+           std::fabs(lhs.b - rhs.b) < 1e-6f &&
+           std::fabs(lhs.a - rhs.a) < 1e-6f;
+}
+
 void expectColorRange(const vsg::ref_ptr<vsg::vec3Array>& colors,
                       uint32_t firstIndex,
                       uint32_t count,
@@ -33,6 +41,23 @@ void expectColorRange(const vsg::ref_ptr<vsg::vec3Array>& colors,
         EXPECT_FLOAT_EQ((*colors)[index].r, expected.r);
         EXPECT_FLOAT_EQ((*colors)[index].g, expected.g);
         EXPECT_FLOAT_EQ((*colors)[index].b, expected.b);
+    }
+}
+
+void expectColorRange(const vsg::ref_ptr<vsg::vec4Array>& colors,
+                      uint32_t firstIndex,
+                      uint32_t count,
+                      const vsg::vec4& expected)
+{
+    ASSERT_TRUE(colors);
+    ASSERT_LE(static_cast<std::size_t>(firstIndex + count), colors->size());
+
+    for (uint32_t index = firstIndex; index < firstIndex + count; ++index)
+    {
+        EXPECT_FLOAT_EQ((*colors)[index].r, expected.r);
+        EXPECT_FLOAT_EQ((*colors)[index].g, expected.g);
+        EXPECT_FLOAT_EQ((*colors)[index].b, expected.b);
+        EXPECT_FLOAT_EQ((*colors)[index].a, expected.a);
     }
 }
 } // namespace
@@ -51,6 +76,16 @@ TEST_F(AssemblySceneTest, BuildSceneNonNull)
 {
     auto sceneData = buildAssemblyScene(assembly);
     EXPECT_TRUE(sceneData.scene);
+}
+
+TEST_F(AssemblySceneTest, BuildPbrSceneNonNull)
+{
+    SceneOptions sceneOptions;
+    sceneOptions.shadingMode = ShadingMode::Pbr;
+
+    auto sceneData = buildAssemblyScene(assembly, {}, sceneOptions);
+    EXPECT_TRUE(sceneData.scene);
+    EXPECT_EQ(sceneData.parts.size(), 2u);
 }
 
 TEST_F(AssemblySceneTest, PartsListMatchesLeafCount)
@@ -153,6 +188,26 @@ TEST(AssemblySceneSimple, ColoredBoxProducesScene)
     EXPECT_NEAR(root.color.r, 1.0f, 0.01f);
     EXPECT_NEAR(root.color.g, 0.0f, 0.01f);
     EXPECT_NEAR(root.color.b, 0.0f, 0.01f);
+    EXPECT_EQ(sceneData.parts.front().visualMaterial.source, ShapeVisualMaterialSource::ColorFallback);
+}
+
+TEST(AssemblySceneSimple, PbrSceneKeepsImportedMaterialAndBuildsFaceColors)
+{
+    auto assembly = readStep(testDataPath("colored_box.step"));
+    SceneOptions sceneOptions;
+    sceneOptions.shadingMode = ShadingMode::Pbr;
+
+    auto sceneData = buildAssemblyScene(assembly, {}, sceneOptions);
+    ASSERT_FALSE(sceneData.parts.empty());
+
+    const auto& part = sceneData.parts.front();
+    ASSERT_TRUE(part.faceColors);
+    ASSERT_GT(part.faceColors->size(), 0u);
+    EXPECT_EQ(part.visualMaterial.source, ShapeVisualMaterialSource::ColorFallback);
+    EXPECT_NEAR(part.visualMaterial.baseColorFactor[0], 1.0f, 0.01f);
+    EXPECT_NEAR(part.visualMaterial.baseColorFactor[1], 0.0f, 0.01f);
+    EXPECT_NEAR(part.visualMaterial.baseColorFactor[2], 0.0f, 0.01f);
+    EXPECT_FLOAT_EQ((*part.faceColors)[0].a, 1.0f);
 }
 
 TEST(AssemblySceneSimple, SelectionHighlightUpdatesFaceColors)
@@ -179,6 +234,96 @@ TEST(AssemblySceneSimple, SelectionHighlightUpdatesFaceColors)
     EXPECT_FLOAT_EQ((*part.faceColors)[0].r, originalColor.r);
     EXPECT_FLOAT_EQ((*part.faceColors)[0].g, originalColor.g);
     EXPECT_FLOAT_EQ((*part.faceColors)[0].b, originalColor.b);
+    EXPECT_FLOAT_EQ((*part.faceColors)[0].a, originalColor.a);
+}
+
+TEST(AssemblySceneSimple, PbrSelectionDoesNotMutateStoredMaterialData)
+{
+    auto assembly = readStep(testDataPath("colored_box.step"));
+    SceneOptions sceneOptions;
+    sceneOptions.shadingMode = ShadingMode::Pbr;
+
+    auto sceneData = buildAssemblyScene(assembly, {}, sceneOptions);
+    ASSERT_FALSE(sceneData.parts.empty());
+
+    auto& part = sceneData.parts.front();
+    const auto baseMaterial = part.visualMaterial;
+    ASSERT_TRUE(setSelectedPart(sceneData, part.partId));
+
+    EXPECT_EQ(part.visualMaterial.source, baseMaterial.source);
+    EXPECT_EQ(part.visualMaterial.hasPbr, baseMaterial.hasPbr);
+    EXPECT_EQ(part.visualMaterial.doubleSided, baseMaterial.doubleSided);
+    EXPECT_NEAR(part.visualMaterial.baseColorFactor[0], baseMaterial.baseColorFactor[0], 1e-6f);
+    EXPECT_NEAR(part.visualMaterial.baseColorFactor[1], baseMaterial.baseColorFactor[1], 1e-6f);
+    EXPECT_NEAR(part.visualMaterial.baseColorFactor[2], baseMaterial.baseColorFactor[2], 1e-6f);
+    EXPECT_NEAR(part.visualMaterial.baseColorFactor[3], baseMaterial.baseColorFactor[3], 1e-6f);
+    EXPECT_NEAR(part.visualMaterial.metallicFactor, baseMaterial.metallicFactor, 1e-6f);
+    EXPECT_NEAR(part.visualMaterial.roughnessFactor, baseMaterial.roughnessFactor, 1e-6f);
+}
+
+TEST(AssemblySceneSimple, ApplyMaterialPresetUpdatesRuntimePbrMaterialAndCanRestoreImported)
+{
+    auto assembly = readStep(testDataPath("colored_box.step"));
+    SceneOptions sceneOptions;
+    sceneOptions.shadingMode = ShadingMode::Pbr;
+
+    auto sceneData = buildAssemblyScene(assembly, {}, sceneOptions);
+    ASSERT_FALSE(sceneData.parts.empty());
+
+    auto& part = sceneData.parts.front();
+    const auto importedMaterial = part.visualMaterial;
+    const auto importedBaseColor = part.baseColor;
+    ASSERT_TRUE(part.pbrMaterialValue);
+
+    EXPECT_EQ(sceneData.materialPreset, MaterialPreset::Imported);
+    EXPECT_TRUE(applyMaterialPreset(sceneData, MaterialPreset::Gold));
+    EXPECT_EQ(sceneData.materialPreset, MaterialPreset::Gold);
+    EXPECT_EQ(part.visualMaterial.source, ShapeVisualMaterialSource::Pbr);
+    EXPECT_NEAR(part.visualMaterial.baseColorFactor[0], 1.0f, 0.01f);
+    EXPECT_NEAR(part.visualMaterial.baseColorFactor[1], 0.84f, 0.01f);
+    EXPECT_NEAR(part.visualMaterial.baseColorFactor[2], 0.24f, 0.01f);
+    EXPECT_NEAR(part.visualMaterial.metallicFactor, 1.0f, 0.01f);
+    EXPECT_NEAR(part.visualMaterial.roughnessFactor, 0.18f, 0.01f);
+    EXPECT_FALSE(sameColor(part.baseColor, importedBaseColor));
+    EXPECT_NEAR(part.pbrMaterialValue->value().metallicFactor, 1.0f, 1e-6f);
+    EXPECT_NEAR(part.pbrMaterialValue->value().roughnessFactor, 0.18f, 1e-6f);
+    EXPECT_TRUE(sameColor((*part.faceColors)[0], part.baseColor));
+
+    EXPECT_TRUE(applyMaterialPreset(sceneData, MaterialPreset::Imported));
+    EXPECT_EQ(sceneData.materialPreset, MaterialPreset::Imported);
+    EXPECT_EQ(part.visualMaterial.source, importedMaterial.source);
+    EXPECT_NEAR(part.visualMaterial.baseColorFactor[0], importedMaterial.baseColorFactor[0], 1e-6f);
+    EXPECT_NEAR(part.visualMaterial.baseColorFactor[1], importedMaterial.baseColorFactor[1], 1e-6f);
+    EXPECT_NEAR(part.visualMaterial.baseColorFactor[2], importedMaterial.baseColorFactor[2], 1e-6f);
+    EXPECT_NEAR(part.visualMaterial.baseColorFactor[3], importedMaterial.baseColorFactor[3], 1e-6f);
+    EXPECT_TRUE(sameColor(part.baseColor, importedBaseColor));
+}
+
+TEST(AssemblySceneSimple, MaterialPresetSwitchPreservesSelectionLayering)
+{
+    auto assembly = readStep(testDataPath("box.step"));
+    SceneOptions sceneOptions;
+    sceneOptions.shadingMode = ShadingMode::Pbr;
+
+    auto sceneData = buildAssemblyScene(assembly, {}, sceneOptions);
+    ASSERT_FALSE(sceneData.parts.empty());
+
+    auto& part = sceneData.parts.front();
+    ASSERT_TRUE(applyMaterialPreset(sceneData, MaterialPreset::Copper));
+    const auto copperBaseColor = part.baseColor;
+
+    ASSERT_TRUE(setSelectedPart(sceneData, part.partId));
+    const auto selectedColor = (*part.faceColors)[0];
+    EXPECT_FALSE(sameColor(selectedColor, copperBaseColor));
+
+    ASSERT_TRUE(applyMaterialPreset(sceneData, MaterialPreset::Iron));
+    const auto selectedAfterPresetChange = (*part.faceColors)[0];
+    EXPECT_FALSE(sameColor(selectedAfterPresetChange, part.baseColor));
+
+    clearSelection(sceneData);
+    EXPECT_TRUE(sameColor((*part.faceColors)[0], part.baseColor));
+    EXPECT_NEAR(part.visualMaterial.metallicFactor, 0.94f, 0.01f);
+    EXPECT_NEAR(part.visualMaterial.roughnessFactor, 0.42f, 0.01f);
 }
 
 TEST(AssemblySceneSimple, PrimitiveSelectionTransitionsAcrossKinds)

@@ -5,9 +5,12 @@
 
 namespace vsgocct
 {
-scene::AssemblySceneData loadStepScene(const std::filesystem::path& stepFile)
+scene::AssemblySceneData loadStepScene(
+    const std::filesystem::path& stepFile,
+    const mesh::MeshOptions& meshOptions,
+    const scene::SceneOptions& sceneOptions)
 {
     auto assembly = cad::readStep(stepFile);
-    return scene::buildAssemblyScene(assembly);
+    return scene::buildAssemblyScene(assembly, meshOptions, sceneOptions);
 }
 } // namespace vsgocct

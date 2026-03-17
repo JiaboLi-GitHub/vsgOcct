@@ -7,8 +7,11 @@
 #include <XCAFDoc_ColorTool.hxx>
 #include <XCAFDoc_DocumentTool.hxx>
 #include <XCAFDoc_ShapeTool.hxx>
+#include <XCAFDoc_VisMaterial.hxx>
+#include <XCAFDoc_VisMaterialTool.hxx>
 
 #include <Quantity_Color.hxx>
+#include <Quantity_ColorRGBA.hxx>
 #include <TCollection_AsciiString.hxx>
 
 #include <fstream>
@@ -48,20 +51,97 @@ ShapeNodeColor readLabelColor(const TDF_Label& label,
     return {};
 }
 
+ShapeVisualMaterial makeColorFallbackMaterial(const ShapeNodeColor& color)
+{
+    ShapeVisualMaterial material;
+    if (!color.isSet)
+    {
+        return material;
+    }
+
+    material.baseColorFactor = {color.r, color.g, color.b, 1.0f};
+    material.source = ShapeVisualMaterialSource::ColorFallback;
+    return material;
+}
+
+ShapeVisualMaterial readLabelVisualMaterial(const TDF_Label& label)
+{
+    auto visMaterial = XCAFDoc_VisMaterialTool::GetShapeMaterial(label);
+    if (visMaterial.IsNull() || visMaterial->IsEmpty())
+    {
+        return {};
+    }
+
+    ShapeVisualMaterial material;
+    const Quantity_ColorRGBA baseColor = visMaterial->BaseColor();
+    material.baseColorFactor = {
+        static_cast<float>(baseColor.GetRGB().Red()),
+        static_cast<float>(baseColor.GetRGB().Green()),
+        static_cast<float>(baseColor.GetRGB().Blue()),
+        static_cast<float>(baseColor.Alpha())};
+
+    const auto alphaMode = visMaterial->AlphaMode();
+    material.alphaMask = alphaMode == Graphic3d_AlphaMode_Mask ||
+                         alphaMode == Graphic3d_AlphaMode_MaskBlend;
+    material.alphaCutoff = visMaterial->AlphaCutOff();
+    material.doubleSided = visMaterial->FaceCulling() != Graphic3d_TypeOfBackfacingModel_BackCulled &&
+                           visMaterial->FaceCulling() != Graphic3d_TypeOfBackfacingModel_FrontCulled;
+
+    const auto pbr = visMaterial->HasPbrMaterial()
+                         ? visMaterial->PbrMaterial()
+                         : visMaterial->ConvertToPbrMaterial();
+    if (pbr.IsDefined)
+    {
+        material.baseColorFactor = {
+            static_cast<float>(pbr.BaseColor.GetRGB().Red()),
+            static_cast<float>(pbr.BaseColor.GetRGB().Green()),
+            static_cast<float>(pbr.BaseColor.GetRGB().Blue()),
+            static_cast<float>(pbr.BaseColor.Alpha())};
+        material.emissiveFactor = {
+            static_cast<float>(pbr.EmissiveFactor.r()),
+            static_cast<float>(pbr.EmissiveFactor.g()),
+            static_cast<float>(pbr.EmissiveFactor.b())};
+        material.metallicFactor = static_cast<float>(pbr.Metallic);
+        material.roughnessFactor = static_cast<float>(pbr.Roughness);
+        material.hasPbr = visMaterial->HasPbrMaterial();
+    }
+
+    material.source = ShapeVisualMaterialSource::Pbr;
+    return material;
+}
+
+void finalizeVisualMaterial(ShapeNode& node, const ShapeVisualMaterial& parentMaterial)
+{
+    if (node.visualMaterial.source == ShapeVisualMaterialSource::Default &&
+        parentMaterial.source != ShapeVisualMaterialSource::Default)
+    {
+        node.visualMaterial = parentMaterial;
+    }
+
+    if (node.visualMaterial.source == ShapeVisualMaterialSource::Default &&
+        node.color.isSet)
+    {
+        node.visualMaterial = makeColorFallbackMaterial(node.color);
+    }
+}
+
 ShapeNode buildShapeNode(const TDF_Label& label,
                          const Handle(XCAFDoc_ShapeTool)& shapeTool,
                          const Handle(XCAFDoc_ColorTool)& colorTool,
-                         const ShapeNodeColor& parentColor)
+                         const ShapeNodeColor& parentColor,
+                         const ShapeVisualMaterial& parentMaterial)
 {
     ShapeNode node;
     node.name = readLabelName(label);
     node.color = readLabelColor(label, colorTool);
+    node.visualMaterial = readLabelVisualMaterial(label);
 
     // Color inheritance: if not set on this label, inherit from parent
     if (!node.color.isSet && parentColor.isSet)
     {
         node.color = parentColor;
     }
+    finalizeVisualMaterial(node, parentMaterial);
 
     // Resolve references: extract location and follow to prototype
     TDF_Label resolvedLabel = label;
@@ -87,6 +167,12 @@ ShapeNode buildShapeNode(const TDF_Label& label,
                 node.color = parentColor;
             }
         }
+
+        if (node.visualMaterial.source == ShapeVisualMaterialSource::Default)
+        {
+            node.visualMaterial = readLabelVisualMaterial(resolvedLabel);
+            finalizeVisualMaterial(node, parentMaterial);
+        }
     }
 
     // Process the resolved label (prototype)
@@ -100,7 +186,12 @@ ShapeNode buildShapeNode(const TDF_Label& label,
             try
             {
                 node.children.push_back(
-                    buildShapeNode(components.Value(i), shapeTool, colorTool, node.color));
+                    buildShapeNode(
+                        components.Value(i),
+                        shapeTool,
+                        colorTool,
+                        node.color,
+                        node.visualMaterial));
             }
             catch (const std::exception& ex)
             {
@@ -149,6 +240,7 @@ AssemblyData readStep(const std::filesystem::path& stepFile, const ReaderOptions
     STEPCAFControl_Reader reader;
     reader.SetNameMode(true);
     reader.SetColorMode(true);
+    reader.SetMatMode(true);
 
     const std::string displayName = stepFile.filename().u8string();
     const auto status = reader.ReadStream(displayName.c_str(), input);
@@ -165,18 +257,25 @@ AssemblyData readStep(const std::filesystem::path& stepFile, const ReaderOptions
 
     auto shapeTool = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
     auto colorTool = XCAFDoc_DocumentTool::ColorTool(doc->Main());
+    static_cast<void>(XCAFDoc_DocumentTool::VisMaterialTool(doc->Main()));
 
     NCollection_Sequence<TDF_Label> freeLabels;
     shapeTool->GetFreeShapes(freeLabels);
 
     AssemblyData assembly;
     ShapeNodeColor noParentColor;
+    ShapeVisualMaterial noParentMaterial;
     for (Standard_Integer i = 1; i <= freeLabels.Length(); ++i)
     {
         try
         {
             assembly.roots.push_back(
-                buildShapeNode(freeLabels.Value(i), shapeTool, colorTool, noParentColor));
+                buildShapeNode(
+                    freeLabels.Value(i),
+                    shapeTool,
+                    colorTool,
+                    noParentColor,
+                    noParentMaterial));
         }
         catch (const std::exception& ex)
         {

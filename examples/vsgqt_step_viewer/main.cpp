@@ -5,6 +5,8 @@
 #include <QtCore/QStringList>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
+#include <QtWidgets/QComboBox>
+#include <QtWidgets/QDockWidget>
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QLabel>
@@ -26,11 +28,20 @@
 
 namespace
 {
+bool hasOption(const QStringList& arguments, const QString& option)
+{
+    return arguments.contains(option, Qt::CaseInsensitive);
+}
+
 QString resolveStepFile(const QStringList& arguments)
 {
-    if (arguments.size() > 1)
+    for (int index = 1; index < arguments.size(); ++index)
     {
-        return arguments.at(1);
+        const QString argument = arguments.at(index);
+        if (!argument.startsWith('-'))
+        {
+            return argument;
+        }
     }
 
     const QString initialDirectory = std::filesystem::exists("D:/OCCT/data/step")
@@ -61,6 +72,78 @@ QString defaultStatusMessage(const vsgocct::scene::AssemblySceneData& sceneData)
         .arg(static_cast<qulonglong>(sceneData.totalTriangleCount))
         .arg(static_cast<qulonglong>(sceneData.totalLineSegmentCount))
         .arg(static_cast<qulonglong>(sceneData.totalPointCount));
+}
+
+QString shadingModeLabel(vsgocct::scene::ShadingMode shadingMode)
+{
+    return shadingMode == vsgocct::scene::ShadingMode::Pbr
+               ? QStringLiteral("PBR")
+               : QStringLiteral("Legacy");
+}
+
+QString materialPresetLabel(vsgocct::scene::MaterialPreset preset)
+{
+    using vsgocct::scene::MaterialPreset;
+
+    switch (preset)
+    {
+    case MaterialPreset::Imported:
+        return QStringLiteral("原始材质");
+    case MaterialPreset::Iron:
+        return QStringLiteral("铁");
+    case MaterialPreset::Copper:
+        return QStringLiteral("铜");
+    case MaterialPreset::Gold:
+        return QStringLiteral("黄金");
+    case MaterialPreset::Wood:
+        return QStringLiteral("木头");
+    case MaterialPreset::Acrylic:
+        return QStringLiteral("亚克力");
+    default:
+        return QStringLiteral("原始材质");
+    }
+}
+
+QString materialPresetDescription(vsgocct::scene::MaterialPreset preset,
+                                  vsgocct::scene::ShadingMode shadingMode)
+{
+    using vsgocct::scene::MaterialPreset;
+
+    QString suffix;
+    if (shadingMode == vsgocct::scene::ShadingMode::Legacy)
+    {
+        suffix = QStringLiteral("Legacy 模式下主要体现基础色，完整材质观感建议使用 PBR。");
+    }
+
+    switch (preset)
+    {
+    case MaterialPreset::Imported:
+        return suffix.isEmpty()
+                   ? QStringLiteral("使用 STEP/XCAF 导入的原始颜色或材质。")
+                   : QStringLiteral("使用 STEP/XCAF 导入的原始颜色或材质。%1").arg(suffix);
+    case MaterialPreset::Iron:
+        return suffix.isEmpty()
+                   ? QStringLiteral("冷灰色金属，较高金属度，中等粗糙度。")
+                   : QStringLiteral("冷灰色金属，较高金属度，中等粗糙度。%1").arg(suffix);
+    case MaterialPreset::Copper:
+        return suffix.isEmpty()
+                   ? QStringLiteral("偏暖红铜色，高金属度，带轻微抛光感。")
+                   : QStringLiteral("偏暖红铜色，高金属度，带轻微抛光感。%1").arg(suffix);
+    case MaterialPreset::Gold:
+        return suffix.isEmpty()
+                   ? QStringLiteral("高反射暖金属色，低粗糙度。")
+                   : QStringLiteral("高反射暖金属色，低粗糙度。%1").arg(suffix);
+    case MaterialPreset::Wood:
+        return suffix.isEmpty()
+                   ? QStringLiteral("低金属度木质表面，棕色基底，较高粗糙度。")
+                   : QStringLiteral("低金属度木质表面，棕色基底，较高粗糙度。%1").arg(suffix);
+    case MaterialPreset::Acrylic:
+        return suffix.isEmpty()
+                   ? QStringLiteral("半透明高光塑料感材质，适合观察透光效果。")
+                   : QStringLiteral("半透明高光塑料感材质，适合观察透光效果。%1").arg(suffix);
+    default:
+        return suffix;
+    }
 }
 
 QString primitiveKindLabel(vsgocct::selection::PrimitiveKind kind)
@@ -143,10 +226,14 @@ public:
     SelectionClickHandler(vsg::ref_ptr<vsgQt::Viewer> viewer,
                           vsg::ref_ptr<vsg::Camera> camera,
                           vsgocct::scene::AssemblySceneData& sceneData,
+                          QString shadingLabel,
+                          const QString* materialLabel,
                           QStatusBar* statusBar)
         : viewer_(std::move(viewer)),
           camera_(std::move(camera)),
           sceneData_(sceneData),
+          shadingLabel_(std::move(shadingLabel)),
+          materialLabel_(materialLabel),
           statusBar_(statusBar)
     {
     }
@@ -302,7 +389,11 @@ private:
             return;
         }
 
-        statusBar_->showMessage(defaultStatusMessage(sceneData_));
+        statusBar_->showMessage(
+            QStringLiteral("Shading: %1 | Material: %2 | %3")
+                .arg(shadingLabel_)
+                .arg(materialLabel_ ? *materialLabel_ : QStringLiteral("N/A"))
+                .arg(defaultStatusMessage(sceneData_)));
     }
 
     void syncStatusAndRefresh(bool changed)
@@ -364,6 +455,8 @@ private:
     vsg::ref_ptr<vsgQt::Viewer> viewer_;
     vsg::ref_ptr<vsg::Camera> camera_;
     vsgocct::scene::AssemblySceneData& sceneData_;
+    QString shadingLabel_;
+    const QString* materialLabel_ = nullptr;
     QStatusBar* statusBar_ = nullptr;
     std::optional<vsgocct::selection::PickResult> selectedPick_;
     std::optional<vsgocct::selection::PickResult> hoverPick_;
@@ -422,17 +515,26 @@ int main(int argc, char* argv[])
             return 0;
         }
 
-        auto sceneData = vsgocct::loadStepScene(std::filesystem::path(stepFile.toStdWString()));
+        vsgocct::scene::SceneOptions sceneOptions;
+        sceneOptions.shadingMode = hasOption(application.arguments(), QStringLiteral("--legacy"))
+                                       ? vsgocct::scene::ShadingMode::Legacy
+                                       : vsgocct::scene::ShadingMode::Pbr;
+        const QString shadingLabel = shadingModeLabel(sceneOptions.shadingMode);
+
+        auto sceneData = vsgocct::loadStepScene(
+            std::filesystem::path(stepFile.toStdWString()),
+            {},
+            sceneOptions);
         std::cout << "Loaded " << sceneData.totalPointCount << " points, "
                   << sceneData.totalLineSegmentCount << " line segments, "
                   << sceneData.totalTriangleCount << " triangles, "
-                  << sceneData.parts.size() << " parts from "
+                  << sceneData.parts.size() << " parts in " << shadingLabel.toStdString() << " mode from "
                   << stepFile.toLocal8Bit().constData() << std::endl;
 
         auto viewer = vsgQt::Viewer::create();
 
         auto traits = vsg::WindowTraits::create();
-        traits->windowTitle = "vsgQt OCCT STEP Viewer";
+        traits->windowTitle = QStringLiteral("vsgQt OCCT STEP Viewer (%1)").arg(shadingLabel).toStdString();
         traits->width = 1280;
         traits->height = 900;
         traits->samples = VK_SAMPLE_COUNT_4_BIT;
@@ -449,12 +551,23 @@ int main(int argc, char* argv[])
         container->setFocusPolicy(Qt::StrongFocus);
         layout->addWidget(container);
 
-        mainWindow.setWindowTitle(QStringLiteral("STEP Viewer - %1").arg(QFileInfo(stepFile).fileName()));
+        mainWindow.setWindowTitle(
+            QStringLiteral("STEP Viewer (%1) - %2")
+                .arg(shadingLabel)
+                .arg(QFileInfo(stepFile).fileName()));
         mainWindow.setCentralWidget(centralBase);
         mainWindow.resize(static_cast<int>(traits->width), static_cast<int>(traits->height));
 
+        QString activeMaterialLabel = materialPresetLabel(sceneData.materialPreset);
+
         auto selectionHandler = vsg::ref_ptr<SelectionClickHandler>(
-            new SelectionClickHandler(viewer, renderWindowContext.camera, sceneData, mainWindow.statusBar()));
+            new SelectionClickHandler(
+                viewer,
+                renderWindowContext.camera,
+                sceneData,
+                shadingLabel,
+                &activeMaterialLabel,
+                mainWindow.statusBar()));
         viewer->addEventHandler(selectionHandler);
         viewer->addEventHandler(renderWindowContext.trackball);
         viewer->addEventHandler(vsg::CloseHandler::create(viewer));
@@ -546,6 +659,64 @@ int main(int argc, char* argv[])
         panelLayout->addWidget(scrollArea);
 
         overlay->adjustSize();
+
+        auto* materialDock = new QDockWidget(QStringLiteral("材质"), &mainWindow);
+        materialDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+        materialDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
+        materialDock->setMinimumWidth(250);
+
+        auto* materialPanel = new QWidget(materialDock);
+        auto* materialLayout = new QVBoxLayout(materialPanel);
+        materialLayout->setContentsMargins(10, 10, 10, 10);
+        materialLayout->setSpacing(8);
+
+        auto* materialTitle = new QLabel(QStringLiteral("整模型材质"), materialPanel);
+        materialTitle->setStyleSheet(QStringLiteral("font-weight: 600;"));
+        materialLayout->addWidget(materialTitle);
+
+        auto* materialCombo = new QComboBox(materialPanel);
+        for (const auto preset : {vsgocct::scene::MaterialPreset::Imported,
+                                  vsgocct::scene::MaterialPreset::Iron,
+                                  vsgocct::scene::MaterialPreset::Copper,
+                                  vsgocct::scene::MaterialPreset::Gold,
+                                  vsgocct::scene::MaterialPreset::Wood,
+                                  vsgocct::scene::MaterialPreset::Acrylic})
+        {
+            materialCombo->addItem(
+                materialPresetLabel(preset),
+                static_cast<int>(preset));
+        }
+        materialLayout->addWidget(materialCombo);
+
+        auto* materialHint = new QLabel(
+            materialPresetDescription(sceneData.materialPreset, sceneData.shadingMode),
+            materialPanel);
+        materialHint->setWordWrap(true);
+        materialHint->setStyleSheet(QStringLiteral("color: palette(mid);"));
+        materialLayout->addWidget(materialHint);
+        materialLayout->addStretch();
+
+        QObject::connect(materialCombo, &QComboBox::currentIndexChanged, &mainWindow,
+            [&sceneData, selectionHandler, &activeMaterialLabel, materialCombo, materialHint](int index)
+            {
+                const auto preset = static_cast<vsgocct::scene::MaterialPreset>(
+                    materialCombo->itemData(index).toInt());
+                activeMaterialLabel = materialPresetLabel(preset);
+                materialHint->setText(materialPresetDescription(preset, sceneData.shadingMode));
+
+                if (vsgocct::scene::applyMaterialPreset(sceneData, preset))
+                {
+                    selectionHandler->showDefaultStatus();
+                    selectionHandler->requestRefresh();
+                }
+                else
+                {
+                    selectionHandler->showDefaultStatus();
+                }
+            });
+
+        materialDock->setWidget(materialPanel);
+        mainWindow.addDockWidget(Qt::RightDockWidgetArea, materialDock);
 
         const QPoint overlayOffset(12, 12);
         mainWindow.installEventFilter(new OverlayPositioner(overlay, &mainWindow, overlayOffset));

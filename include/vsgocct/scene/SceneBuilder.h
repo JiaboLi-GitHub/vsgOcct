@@ -14,9 +14,26 @@
 
 namespace vsgocct::scene
 {
+enum class ShadingMode
+{
+    Legacy,
+    Pbr
+};
+
+enum class MaterialPreset
+{
+    Imported,
+    Iron,
+    Copper,
+    Gold,
+    Wood,
+    Acrylic
+};
+
 struct SceneOptions
 {
-    // Reserved for future options
+    ShadingMode shadingMode = ShadingMode::Legacy;
+    bool addHeadlight = true;
 };
 
 struct PartSceneNode
@@ -24,8 +41,11 @@ struct PartSceneNode
     uint32_t partId = 0;
     std::string name;
     vsg::ref_ptr<vsg::Switch> switchNode;
-    vsg::vec3 baseColor;
-    vsg::ref_ptr<vsg::vec3Array> faceColors;
+    vsg::vec4 baseColor;
+    cad::ShapeVisualMaterial importedMaterial;
+    cad::ShapeVisualMaterial visualMaterial;
+    vsg::ref_ptr<vsg::PbrMaterialValue> pbrMaterialValue;
+    vsg::ref_ptr<vsg::vec4Array> faceColors;
     vsg::ref_ptr<vsg::vec3Array> lineColors;
     vsg::ref_ptr<vsg::vec3Array> pointColors;
     std::vector<mesh::PointSpan> pointSpans;
@@ -39,6 +59,8 @@ struct AssemblySceneData
 {
     vsg::ref_ptr<vsg::Node> scene;
     std::vector<PartSceneNode> parts;
+    ShadingMode shadingMode = ShadingMode::Legacy;
+    MaterialPreset materialPreset = MaterialPreset::Imported;
 
     vsg::dvec3 center;
     double radius = 1.0;
@@ -59,6 +81,10 @@ AssemblySceneData buildAssemblyScene(
 
 PartSceneNode* findPart(AssemblySceneData& sceneData, uint32_t partId);
 const PartSceneNode* findPart(const AssemblySceneData& sceneData, uint32_t partId);
+
+const char* materialPresetName(MaterialPreset preset);
+cad::ShapeVisualMaterial makeMaterialPreset(MaterialPreset preset);
+bool applyMaterialPreset(AssemblySceneData& sceneData, MaterialPreset preset);
 
 bool setSelection(AssemblySceneData& sceneData, const selection::SelectionToken& token);
 void clearSelection(AssemblySceneData& sceneData);

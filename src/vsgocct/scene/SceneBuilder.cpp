@@ -2,15 +2,22 @@
 
 #include <vsg/all.h>
 
+#include <vsgocct/selection/SelectionToken.h>
+
 #include <algorithm>
 #include <cstddef>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace vsgocct::scene
 {
 namespace
 {
+constexpr const char* PART_ID_KEY = "vsgocct.partId";
+constexpr const char* PRIMITIVE_KIND_KEY = "vsgocct.primitiveKind";
+const vsg::vec3 SELECTED_PART_COLOR = vsg::vec3(1.0f, 0.92f, 0.18f);
+
 // Per-vertex color approach: color is stored as a vertex attribute (binding 2)
 // rather than push constants, because VSG auto-pushes only projection+modelView
 // (128 bytes) and custom push constant data requires a custom StateCommand.
@@ -210,13 +217,31 @@ vsg::ref_ptr<vsg::BindGraphicsPipeline> createPrimitivePipeline(
     return vsg::BindGraphicsPipeline::create(graphicsPipeline);
 }
 
+void tagNode(const vsg::ref_ptr<vsg::Node>& node,
+             uint32_t partId,
+             selection::PrimitiveKind primitiveKind)
+{
+    if (!node)
+    {
+        return;
+    }
+
+    node->setValue(PART_ID_KEY, partId);
+    node->setValue(PRIMITIVE_KIND_KEY, static_cast<uint32_t>(primitiveKind));
+}
+
 vsg::ref_ptr<vsg::Node> createPositionOnlyNode(
     const std::vector<vsg::vec3>& positions,
-    const vsg::ref_ptr<vsg::BindGraphicsPipeline>& pipeline)
+    const vsg::ref_ptr<vsg::BindGraphicsPipeline>& pipeline,
+    uint32_t partId,
+    selection::PrimitiveKind primitiveKind)
 {
+    auto stateGroup = vsg::StateGroup::create();
+    tagNode(stateGroup, partId, primitiveKind);
+
     if (positions.empty())
     {
-        return vsg::Group::create();
+        return stateGroup;
     }
 
     auto positionArray = vsg::vec3Array::create(static_cast<uint32_t>(positions.size()));
@@ -234,26 +259,36 @@ vsg::ref_ptr<vsg::Node> createPositionOnlyNode(
     drawCommands->indexCount = indices->width();
     drawCommands->instanceCount = 1;
 
-    auto stateGroup = vsg::StateGroup::create();
     stateGroup->add(pipeline);
     stateGroup->addChild(drawCommands);
     return stateGroup;
 }
 
-vsg::ref_ptr<vsg::Node> createFaceNode(
+struct FaceNodeBuild
+{
+    vsg::ref_ptr<vsg::Node> node;
+    vsg::ref_ptr<vsg::vec3Array> colors;
+};
+
+FaceNodeBuild createFaceNode(
     const std::vector<vsg::vec3>& facePositions,
     const std::vector<vsg::vec3>& faceNormals,
-    const vsg::vec3& color)
+    const vsg::vec3& color,
+    uint32_t partId)
 {
+    auto stateGroup = vsg::StateGroup::create();
+    tagNode(stateGroup, partId, selection::PrimitiveKind::Face);
+
     if (facePositions.empty())
     {
-        return vsg::Group::create();
+        return {stateGroup, {}};
     }
 
     auto vertexCount = static_cast<uint32_t>(facePositions.size());
     auto positions = vsg::vec3Array::create(vertexCount);
     auto normals = vsg::vec3Array::create(vertexCount);
     auto colors = vsg::vec3Array::create(vertexCount);
+    colors->properties.dataVariance = vsg::DYNAMIC_DATA;
     auto indices = vsg::uintArray::create(vertexCount);
 
     for (std::size_t index = 0; index < facePositions.size(); ++index)
@@ -261,7 +296,7 @@ vsg::ref_ptr<vsg::Node> createFaceNode(
         auto i = static_cast<uint32_t>(index);
         (*positions)[i] = facePositions[index];
         (*normals)[i] = faceNormals[index];
-        (*colors)[i] = color;  // Same color for every vertex in this part
+        (*colors)[i] = color;
         (*indices)[i] = i;
     }
 
@@ -271,16 +306,28 @@ vsg::ref_ptr<vsg::Node> createFaceNode(
     drawCommands->indexCount = indices->width();
     drawCommands->instanceCount = 1;
 
-    // Face pipeline: normals=true, colors=true, depthWrite=true
     auto facePipeline = createPrimitivePipeline(
         FACE_VERT_SHADER, FACE_FRAG_SHADER,
         VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
         true, true, true);
 
-    auto stateGroup = vsg::StateGroup::create();
     stateGroup->add(facePipeline);
     stateGroup->addChild(drawCommands);
-    return stateGroup;
+    return {stateGroup, colors};
+}
+
+void applyFaceColor(const vsg::ref_ptr<vsg::vec3Array>& colors, const vsg::vec3& color)
+{
+    if (!colors)
+    {
+        return;
+    }
+
+    for (auto& currentColor : *colors)
+    {
+        currentColor = color;
+    }
+    colors->dirty();
 }
 
 struct BoundsAccumulator
@@ -319,7 +366,8 @@ void buildNodeSubgraph(
     const mesh::MeshOptions& meshOptions,
     std::size_t& totalTriangles,
     std::size_t& totalLines,
-    std::size_t& totalPoints)
+    std::size_t& totalPoints,
+    uint32_t& nextPartId)
 {
     TopLoc_Location currentLocation = accumulatedLocation * shapeNode.location;
 
@@ -329,45 +377,60 @@ void buildNodeSubgraph(
         for (const auto& child : shapeNode.children)
         {
             buildNodeSubgraph(child, group, currentLocation, parts, bounds,
-                              meshOptions, totalTriangles, totalLines, totalPoints);
+                              meshOptions, totalTriangles, totalLines, totalPoints, nextPartId);
         }
         parentGroup->addChild(group);
+        return;
     }
-    else // Part
+
+    const uint32_t partId = nextPartId++;
+    TopoDS_Shape locatedShape = shapeNode.shape.Located(currentLocation);
+    auto meshResult = mesh::triangulate(locatedShape, meshOptions);
+
+    auto color = resolveColor(shapeNode.color);
+    auto faceNode = createFaceNode(meshResult.facePositions, meshResult.faceNormals, color, partId);
+    auto lineNode = createPositionOnlyNode(
+        meshResult.linePositions,
+        createPrimitivePipeline(LINE_VERT_SHADER, LINE_FRAG_SHADER,
+                               VK_PRIMITIVE_TOPOLOGY_LINE_LIST, false, false, false),
+        partId,
+        selection::PrimitiveKind::Edge);
+    auto pointNode = createPositionOnlyNode(
+        meshResult.pointPositions,
+        createPrimitivePipeline(POINT_VERT_SHADER, POINT_FRAG_SHADER,
+                               VK_PRIMITIVE_TOPOLOGY_POINT_LIST, false, false, false),
+        partId,
+        selection::PrimitiveKind::Vertex);
+
+    auto partGroup = vsg::Group::create();
+    partGroup->setValue(PART_ID_KEY, partId);
+    partGroup->addChild(faceNode.node);
+    partGroup->addChild(lineNode);
+    partGroup->addChild(pointNode);
+
+    auto partSwitch = vsg::Switch::create();
+    partSwitch->setValue(PART_ID_KEY, partId);
+    partSwitch->addChild(true, partGroup);
+    parentGroup->addChild(partSwitch);
+
+    PartSceneNode partSceneNode;
+    partSceneNode.partId = partId;
+    partSceneNode.name = shapeNode.name;
+    partSceneNode.switchNode = partSwitch;
+    partSceneNode.baseColor = color;
+    partSceneNode.faceColors = faceNode.colors;
+    partSceneNode.pointSpans = std::move(meshResult.pointSpans);
+    partSceneNode.lineSpans = std::move(meshResult.lineSpans);
+    partSceneNode.faceSpans = std::move(meshResult.faceSpans);
+    parts.push_back(std::move(partSceneNode));
+
+    totalTriangles += meshResult.triangleCount;
+    totalLines += meshResult.lineSegmentCount;
+    totalPoints += meshResult.pointCount;
+
+    if (meshResult.hasGeometry())
     {
-        TopoDS_Shape locatedShape = shapeNode.shape.Located(currentLocation);
-        auto meshResult = mesh::triangulate(locatedShape, meshOptions);
-
-        auto color = resolveColor(shapeNode.color);
-        auto faceNode = createFaceNode(meshResult.facePositions, meshResult.faceNormals, color);
-        auto lineNode = createPositionOnlyNode(
-            meshResult.linePositions,
-            createPrimitivePipeline(LINE_VERT_SHADER, LINE_FRAG_SHADER,
-                                   VK_PRIMITIVE_TOPOLOGY_LINE_LIST, false, false, false));
-        auto pointNode = createPositionOnlyNode(
-            meshResult.pointPositions,
-            createPrimitivePipeline(POINT_VERT_SHADER, POINT_FRAG_SHADER,
-                                   VK_PRIMITIVE_TOPOLOGY_POINT_LIST, false, false, false));
-
-        auto partGroup = vsg::Group::create();
-        partGroup->addChild(faceNode);
-        partGroup->addChild(lineNode);
-        partGroup->addChild(pointNode);
-
-        auto partSwitch = vsg::Switch::create();
-        partSwitch->addChild(true, partGroup);
-        parentGroup->addChild(partSwitch);
-
-        parts.push_back({shapeNode.name, partSwitch});
-
-        totalTriangles += meshResult.triangleCount;
-        totalLines += meshResult.lineSegmentCount;
-        totalPoints += meshResult.pointCount;
-
-        if (meshResult.hasGeometry())
-        {
-            bounds.expand(meshResult.boundsMin, meshResult.boundsMax);
-        }
+        bounds.expand(meshResult.boundsMin, meshResult.boundsMax);
     }
 }
 } // namespace
@@ -383,12 +446,13 @@ AssemblySceneData buildAssemblyScene(
     std::size_t totalTriangles = 0;
     std::size_t totalLines = 0;
     std::size_t totalPoints = 0;
+    uint32_t nextPartId = 0;
 
     TopLoc_Location identity;
     for (const auto& rootNode : assembly.roots)
     {
         buildNodeSubgraph(rootNode, root, identity, parts, bounds,
-                          meshOptions, totalTriangles, totalLines, totalPoints);
+                          meshOptions, totalTriangles, totalLines, totalPoints, nextPartId);
     }
 
     AssemblySceneData sceneData;
@@ -407,5 +471,66 @@ AssemblySceneData buildAssemblyScene(
     sceneData.totalPointCount = totalPoints;
 
     return sceneData;
+}
+
+PartSceneNode* findPart(AssemblySceneData& sceneData, uint32_t partId)
+{
+    return const_cast<PartSceneNode*>(findPart(std::as_const(sceneData), partId));
+}
+
+const PartSceneNode* findPart(const AssemblySceneData& sceneData, uint32_t partId)
+{
+    if (partId == InvalidPartId)
+    {
+        return nullptr;
+    }
+
+    if (partId < sceneData.parts.size() && sceneData.parts[partId].partId == partId)
+    {
+        return &sceneData.parts[partId];
+    }
+
+    const auto itr = std::find_if(
+        sceneData.parts.begin(),
+        sceneData.parts.end(),
+        [partId](const PartSceneNode& part)
+        {
+            return part.partId == partId;
+        });
+    return itr != sceneData.parts.end() ? &(*itr) : nullptr;
+}
+
+bool setSelectedPart(AssemblySceneData& sceneData, uint32_t partId)
+{
+    PartSceneNode* part = findPart(sceneData, partId);
+    if (!part)
+    {
+        return false;
+    }
+
+    if (sceneData.selectedPartId == partId)
+    {
+        return true;
+    }
+
+    clearSelectedPart(sceneData);
+    applyFaceColor(part->faceColors, SELECTED_PART_COLOR);
+    sceneData.selectedPartId = partId;
+    return true;
+}
+
+void clearSelectedPart(AssemblySceneData& sceneData)
+{
+    if (sceneData.selectedPartId == InvalidPartId)
+    {
+        return;
+    }
+
+    if (PartSceneNode* part = findPart(sceneData, sceneData.selectedPartId))
+    {
+        applyFaceColor(part->faceColors, part->baseColor);
+    }
+
+    sceneData.selectedPartId = InvalidPartId;
 }
 } // namespace vsgocct::scene

@@ -73,6 +73,9 @@ struct SceneBuffers
     PointBuffers points;
     LineBuffers lines;
     FaceBuffers faces;
+    std::vector<PointSpan> pointSpans;
+    std::vector<LineSpan> lineSpans;
+    std::vector<FaceSpan> faceSpans;
     BoundsAccumulator bounds;
 
     bool hasGeometry() const
@@ -184,8 +187,18 @@ void extractPoints(const TopoDS_Shape& shape, SceneBuffers& buffers)
 
     for (int vertexIndex = 1; vertexIndex <= vertexMap.Extent(); ++vertexIndex)
     {
+        const std::size_t pointsBefore = buffers.points.pointCount;
         const TopoDS_Vertex vertex = TopoDS::Vertex(vertexMap.FindKey(vertexIndex));
         appendPoint(buffers.points, buffers.bounds, BRep_Tool::Pnt(vertex));
+
+        const std::size_t pointCount = buffers.points.pointCount - pointsBefore;
+        if (pointCount > 0)
+        {
+            buffers.pointSpans.push_back(PointSpan{
+                static_cast<uint32_t>(vertexIndex - 1),
+                static_cast<uint32_t>(pointsBefore),
+                static_cast<uint32_t>(pointCount)});
+        }
     }
 }
 
@@ -272,6 +285,7 @@ void extractLines(const TopoDS_Shape& shape, double linearDeflection, SceneBuffe
 
     for (int edgeIndex = 1; edgeIndex <= edgeMap.Extent(); ++edgeIndex)
     {
+        const std::size_t segmentCountBefore = buffers.lines.segmentCount;
         const TopoDS_Edge edge = TopoDS::Edge(edgeMap.FindKey(edgeIndex));
         if (BRep_Tool::Degenerated(edge))
         {
@@ -280,15 +294,39 @@ void extractLines(const TopoDS_Shape& shape, double linearDeflection, SceneBuffe
 
         if (appendEdgeFromPolygon3D(edge, buffers))
         {
+            const std::size_t segmentCount = buffers.lines.segmentCount - segmentCountBefore;
+            if (segmentCount > 0)
+            {
+                buffers.lineSpans.push_back(LineSpan{
+                    static_cast<uint32_t>(edgeIndex - 1),
+                    static_cast<uint32_t>(segmentCountBefore),
+                    static_cast<uint32_t>(segmentCount)});
+            }
             continue;
         }
 
         if (appendEdgeFromPolygonOnTriangulation(edge, buffers))
         {
+            const std::size_t segmentCount = buffers.lines.segmentCount - segmentCountBefore;
+            if (segmentCount > 0)
+            {
+                buffers.lineSpans.push_back(LineSpan{
+                    static_cast<uint32_t>(edgeIndex - 1),
+                    static_cast<uint32_t>(segmentCountBefore),
+                    static_cast<uint32_t>(segmentCount)});
+            }
             continue;
         }
 
         (void)appendEdgeFromCurve(edge, linearDeflection, buffers);
+        const std::size_t segmentCount = buffers.lines.segmentCount - segmentCountBefore;
+        if (segmentCount > 0)
+        {
+            buffers.lineSpans.push_back(LineSpan{
+                static_cast<uint32_t>(edgeIndex - 1),
+                static_cast<uint32_t>(segmentCountBefore),
+                static_cast<uint32_t>(segmentCount)});
+        }
     }
 }
 
@@ -299,6 +337,7 @@ void extractFaces(const TopoDS_Shape& shape, SceneBuffers& buffers)
 
     for (int faceIndex = 1; faceIndex <= faceMap.Extent(); ++faceIndex)
     {
+        const std::size_t triangleCountBefore = buffers.faces.triangleCount;
         const TopoDS_Face face = TopoDS::Face(faceMap.FindKey(faceIndex));
 
         TopLoc_Location location;
@@ -364,6 +403,15 @@ void extractFaces(const TopoDS_Shape& shape, SceneBuffers& buffers)
                 buffers.faces.normals.push_back(toVec3(normal));
             }
         }
+
+        const std::size_t triangleCount = buffers.faces.triangleCount - triangleCountBefore;
+        if (triangleCount > 0)
+        {
+            buffers.faceSpans.push_back(FaceSpan{
+                static_cast<uint32_t>(faceIndex - 1),
+                static_cast<uint32_t>(triangleCountBefore),
+                static_cast<uint32_t>(triangleCount)});
+        }
     }
 }
 } // namespace
@@ -388,11 +436,14 @@ MeshResult triangulate(const TopoDS_Shape& shape, const MeshOptions& options)
 
     MeshResult result;
     result.pointPositions = std::move(buffers.points.positions);
+    result.pointSpans = std::move(buffers.pointSpans);
     result.pointCount = buffers.points.pointCount;
     result.linePositions = std::move(buffers.lines.positions);
+    result.lineSpans = std::move(buffers.lineSpans);
     result.lineSegmentCount = buffers.lines.segmentCount;
     result.facePositions = std::move(buffers.faces.positions);
     result.faceNormals = std::move(buffers.faces.normals);
+    result.faceSpans = std::move(buffers.faceSpans);
     result.triangleCount = buffers.faces.triangleCount;
     result.boundsMin = buffers.bounds.min;
     result.boundsMax = buffers.bounds.max;

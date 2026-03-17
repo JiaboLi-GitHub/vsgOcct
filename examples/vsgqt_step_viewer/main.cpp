@@ -1,4 +1,5 @@
 #include <vsgocct/StepModelLoader.h>
+#include <vsgocct/selection/ScenePicker.h>
 
 #include <QtCore/QFileInfo>
 #include <QtCore/QStringList>
@@ -6,7 +7,6 @@
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QFrame>
-#include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QMainWindow>
 #include <QtWidgets/QMessageBox>
@@ -19,6 +19,7 @@
 #include <vsgQt/Window.h>
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 
@@ -42,7 +43,53 @@ QString resolveStepFile(const QStringList& arguments)
         QStringLiteral("STEP Files (*.step *.stp *.STEP *.STP);;All Files (*.*)"));
 }
 
-vsgQt::Window* createRenderWindow(
+QString partLabel(const vsgocct::scene::PartSceneNode& part, int fallbackIndex)
+{
+    QString label = QString::fromStdString(part.name);
+    if (label.isEmpty())
+    {
+        label = QStringLiteral("(unnamed #%1)").arg(fallbackIndex);
+    }
+    return label;
+}
+
+QString defaultStatusMessage(const vsgocct::scene::AssemblySceneData& sceneData)
+{
+    return QStringLiteral("Parts: %1 | Triangles: %2 | Lines: %3 | Points: %4")
+        .arg(static_cast<qulonglong>(sceneData.parts.size()))
+        .arg(static_cast<qulonglong>(sceneData.totalTriangleCount))
+        .arg(static_cast<qulonglong>(sceneData.totalLineSegmentCount))
+        .arg(static_cast<qulonglong>(sceneData.totalPointCount));
+}
+
+QString primitiveKindLabel(vsgocct::selection::PrimitiveKind kind)
+{
+    using vsgocct::selection::PrimitiveKind;
+
+    switch (kind)
+    {
+    case PrimitiveKind::Part:
+        return QStringLiteral("Part");
+    case PrimitiveKind::Face:
+        return QStringLiteral("Face");
+    case PrimitiveKind::Edge:
+        return QStringLiteral("Edge");
+    case PrimitiveKind::Vertex:
+        return QStringLiteral("Vertex");
+    case PrimitiveKind::None:
+    default:
+        return QStringLiteral("None");
+    }
+}
+
+struct RenderWindowContext
+{
+    vsgQt::Window* window = nullptr;
+    vsg::ref_ptr<vsg::Camera> camera;
+    vsg::ref_ptr<vsg::Trackball> trackball;
+};
+
+RenderWindowContext createRenderWindow(
     const vsg::ref_ptr<vsgQt::Viewer>& viewer,
     const vsg::ref_ptr<vsg::WindowTraits>& traits,
     const vsgocct::scene::AssemblySceneData& sceneData)
@@ -75,14 +122,121 @@ vsgQt::Window* createRenderWindow(
     auto trackball = vsg::Trackball::create(camera);
     trackball->addWindow(*window);
 
-    viewer->addEventHandler(trackball);
-    viewer->addEventHandler(vsg::CloseHandler::create(viewer));
-
     auto commandGraph = vsg::createCommandGraphForView(*window, camera, sceneData.scene);
     viewer->addRecordAndSubmitTaskAndPresentation({commandGraph});
 
-    return window;
+    return {window, camera, trackball};
 }
+
+class SelectionClickHandler : public vsg::Inherit<vsg::Visitor, SelectionClickHandler>
+{
+public:
+    SelectionClickHandler(vsg::ref_ptr<vsgQt::Viewer> viewer,
+                          vsg::ref_ptr<vsg::Camera> camera,
+                          vsgocct::scene::AssemblySceneData& sceneData,
+                          QStatusBar* statusBar)
+        : viewer_(std::move(viewer)),
+          camera_(std::move(camera)),
+          sceneData_(sceneData),
+          statusBar_(statusBar)
+    {
+    }
+
+    void apply(vsg::ButtonPressEvent& buttonPress) override
+    {
+        if (buttonPress.button != 1)
+        {
+            return;
+        }
+
+        pressed_ = true;
+        pressX_ = buttonPress.x;
+        pressY_ = buttonPress.y;
+    }
+
+    void apply(vsg::ButtonReleaseEvent& buttonRelease) override
+    {
+        if (buttonRelease.button != 1 || !pressed_)
+        {
+            return;
+        }
+
+        pressed_ = false;
+        const int deltaX = buttonRelease.x - pressX_;
+        const int deltaY = buttonRelease.y - pressY_;
+        const double dragDistance = std::sqrt(static_cast<double>(deltaX * deltaX + deltaY * deltaY));
+        if (dragDistance > 3.0)
+        {
+            return;
+        }
+
+        const auto pickResult = vsgocct::selection::pick(*camera_, sceneData_, buttonRelease.x, buttonRelease.y);
+        if (!pickResult)
+        {
+            vsgocct::scene::clearSelectedPart(sceneData_);
+            showDefaultStatus();
+            requestRefresh();
+            return;
+        }
+
+        vsgocct::scene::setSelectedPart(sceneData_, pickResult->token.partId);
+        showPickResult(*pickResult);
+        requestRefresh();
+    }
+
+    void showDefaultStatus() const
+    {
+        if (statusBar_)
+        {
+            statusBar_->showMessage(defaultStatusMessage(sceneData_));
+        }
+    }
+
+    void clearSelection()
+    {
+        vsgocct::scene::clearSelectedPart(sceneData_);
+        showDefaultStatus();
+        requestRefresh();
+    }
+
+    void requestRefresh() const
+    {
+        if (viewer_)
+        {
+            viewer_->request();
+        }
+    }
+
+private:
+    void showPickResult(const vsgocct::selection::PickResult& pickResult) const
+    {
+        if (!statusBar_)
+        {
+            return;
+        }
+
+        const auto* part = vsgocct::scene::findPart(sceneData_, pickResult.token.partId);
+        const QString label = part
+                                  ? partLabel(*part, static_cast<int>(pickResult.token.partId + 1))
+                                  : QStringLiteral("(unknown part)");
+        statusBar_->showMessage(
+            QStringLiteral("Selected %1 %2 | %3 | Hit (%4, %5, %6)")
+                .arg(primitiveKindLabel(pickResult.token.kind))
+                .arg(static_cast<qulonglong>(pickResult.token.primitiveId))
+                .arg(label)
+                .arg(pickResult.worldIntersection.x, 0, 'f', 3)
+                .arg(pickResult.worldIntersection.y, 0, 'f', 3)
+                .arg(pickResult.worldIntersection.z, 0, 'f', 3));
+    }
+
+    vsg::ref_ptr<vsgQt::Viewer> viewer_;
+    vsg::ref_ptr<vsg::Camera> camera_;
+    vsgocct::scene::AssemblySceneData& sceneData_;
+    QStatusBar* statusBar_ = nullptr;
+    bool pressed_ = false;
+    int pressX_ = 0;
+    int pressY_ = 0;
+};
 
 class OverlayPositioner : public QObject
 {
@@ -150,14 +304,14 @@ int main(int argc, char* argv[])
         traits->samples = VK_SAMPLE_COUNT_4_BIT;
 
         QMainWindow mainWindow;
-        auto* renderWindow = createRenderWindow(viewer, traits, sceneData);
+        auto renderWindowContext = createRenderWindow(viewer, traits, sceneData);
 
         auto* centralBase = new QWidget(&mainWindow);
         auto* layout = new QVBoxLayout(centralBase);
         layout->setContentsMargins(0, 0, 0, 0);
         layout->setSpacing(0);
 
-        auto* container = QWidget::createWindowContainer(renderWindow);
+        auto* container = QWidget::createWindowContainer(renderWindowContext.window);
         container->setFocusPolicy(Qt::StrongFocus);
         layout->addWidget(container);
 
@@ -165,7 +319,12 @@ int main(int argc, char* argv[])
         mainWindow.setCentralWidget(centralBase);
         mainWindow.resize(static_cast<int>(traits->width), static_cast<int>(traits->height));
 
-        // --- Floating overlay: part list with visibility toggles ---
+        auto selectionHandler = vsg::ref_ptr<SelectionClickHandler>(
+            new SelectionClickHandler(viewer, renderWindowContext.camera, sceneData, mainWindow.statusBar()));
+        viewer->addEventHandler(selectionHandler);
+        viewer->addEventHandler(renderWindowContext.trackball);
+        viewer->addEventHandler(vsg::CloseHandler::create(viewer));
+
         auto* overlay = new QWidget(&mainWindow, Qt::Tool | Qt::FramelessWindowHint);
         overlay->setAttribute(Qt::WA_TranslucentBackground);
         overlay->setStyleSheet(QStringLiteral(R"(
@@ -205,7 +364,6 @@ int main(int argc, char* argv[])
         title->setObjectName(QStringLiteral("partListTitle"));
         panelLayout->addWidget(title);
 
-        // Scrollable part list for assemblies with many parts
         auto* scrollArea = new QScrollArea(panel);
         scrollArea->setWidgetResizable(true);
         scrollArea->setFrameShape(QFrame::NoFrame);
@@ -220,23 +378,26 @@ int main(int argc, char* argv[])
         for (const auto& part : sceneData.parts)
         {
             ++partIndex;
-            QString label = QString::fromStdString(part.name);
-            if (label.isEmpty())
-            {
-                label = QStringLiteral("(unnamed #%1)").arg(partIndex);
-            }
-
-            auto* checkbox = new QCheckBox(label, scrollContent);
+            auto* checkbox = new QCheckBox(partLabel(part, partIndex), scrollContent);
             checkbox->setChecked(true);
 
-            // Capture switchNode by value (ref_ptr copy is cheap)
             auto switchNode = part.switchNode;
+            const uint32_t partId = part.partId;
             QObject::connect(checkbox, &QCheckBox::toggled, &mainWindow,
-                [switchNode](bool visible)
+                [switchNode, &sceneData, selectionHandler, partId](bool visible)
                 {
                     if (switchNode && !switchNode->children.empty())
                     {
                         switchNode->children.front().mask = visible ? vsg::MASK_ALL : vsg::MASK_OFF;
+                    }
+
+                    if (!visible && sceneData.selectedPartId == partId)
+                    {
+                        selectionHandler->clearSelection();
+                    }
+                    else
+                    {
+                        selectionHandler->requestRefresh();
                     }
                 });
 
@@ -252,13 +413,7 @@ int main(int argc, char* argv[])
 
         const QPoint overlayOffset(12, 12);
         mainWindow.installEventFilter(new OverlayPositioner(overlay, &mainWindow, overlayOffset));
-
-        mainWindow.statusBar()->showMessage(
-            QStringLiteral("Parts: %1 | Triangles: %2 | Lines: %3 | Points: %4")
-                .arg(static_cast<qulonglong>(sceneData.parts.size()))
-                .arg(static_cast<qulonglong>(sceneData.totalTriangleCount))
-                .arg(static_cast<qulonglong>(sceneData.totalLineSegmentCount))
-                .arg(static_cast<qulonglong>(sceneData.totalPointCount)));
+        selectionHandler->showDefaultStatus();
 
         viewer->continuousUpdate = true;
         viewer->setInterval(16);

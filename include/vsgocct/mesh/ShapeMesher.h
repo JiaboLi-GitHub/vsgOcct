@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <cstddef>
 #include <vector>
 
@@ -8,6 +9,27 @@
 
 namespace vsgocct::mesh
 {
+struct PointSpan
+{
+    uint32_t vertexId = 0;
+    uint32_t firstPoint = 0;
+    uint32_t pointCount = 0;
+};
+
+struct LineSpan
+{
+    uint32_t edgeId = 0;
+    uint32_t firstSegment = 0;
+    uint32_t segmentCount = 0;
+};
+
+struct FaceSpan
+{
+    uint32_t faceId = 0;
+    uint32_t firstTriangle = 0;
+    uint32_t triangleCount = 0;
+};
+
 struct MeshOptions
 {
     double linearDeflection = 0.0;
@@ -18,13 +40,16 @@ struct MeshOptions
 struct MeshResult
 {
     std::vector<vsg::vec3> pointPositions;
+    std::vector<PointSpan> pointSpans;
     std::size_t pointCount = 0;
 
     std::vector<vsg::vec3> linePositions;
+    std::vector<LineSpan> lineSpans;
     std::size_t lineSegmentCount = 0;
 
     std::vector<vsg::vec3> facePositions;
     std::vector<vsg::vec3> faceNormals;
+    std::vector<FaceSpan> faceSpans;
     std::size_t triangleCount = 0;
 
     vsg::dvec3 boundsMin;

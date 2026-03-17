@@ -45,6 +45,16 @@ TEST_F(AssemblySceneTest, PartsHaveNames)
     }
 }
 
+TEST_F(AssemblySceneTest, PartsHaveStableIds)
+{
+    auto sceneData = buildAssemblyScene(assembly);
+
+    for (std::size_t index = 0; index < sceneData.parts.size(); ++index)
+    {
+        EXPECT_EQ(sceneData.parts[index].partId, static_cast<uint32_t>(index));
+    }
+}
+
 TEST_F(AssemblySceneTest, PartSwitchTogglesVisibility)
 {
     auto sceneData = buildAssemblyScene(assembly);
@@ -117,4 +127,30 @@ TEST(AssemblySceneSimple, ColoredBoxProducesScene)
     EXPECT_NEAR(root.color.r, 1.0f, 0.01f);
     EXPECT_NEAR(root.color.g, 0.0f, 0.01f);
     EXPECT_NEAR(root.color.b, 0.0f, 0.01f);
+}
+
+TEST(AssemblySceneSimple, SelectionHighlightUpdatesFaceColors)
+{
+    auto assembly = readStep(testDataPath("colored_box.step"));
+    auto sceneData = buildAssemblyScene(assembly);
+    ASSERT_FALSE(sceneData.parts.empty());
+
+    auto& part = sceneData.parts.front();
+    ASSERT_TRUE(part.faceColors);
+    ASSERT_GT(part.faceColors->size(), 0u);
+
+    const auto originalColor = (*part.faceColors)[0];
+
+    EXPECT_TRUE(setSelectedPart(sceneData, part.partId));
+    EXPECT_EQ(sceneData.selectedPartId, part.partId);
+    const auto selectedColor = (*part.faceColors)[0];
+    EXPECT_TRUE(selectedColor.r != originalColor.r ||
+                selectedColor.g != originalColor.g ||
+                selectedColor.b != originalColor.b);
+
+    clearSelectedPart(sceneData);
+    EXPECT_EQ(sceneData.selectedPartId, InvalidPartId);
+    EXPECT_FLOAT_EQ((*part.faceColors)[0].r, originalColor.r);
+    EXPECT_FLOAT_EQ((*part.faceColors)[0].g, originalColor.g);
+    EXPECT_FLOAT_EQ((*part.faceColors)[0].b, originalColor.b);
 }

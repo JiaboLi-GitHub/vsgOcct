@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <cstddef>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -18,9 +20,17 @@ struct SceneOptions
 
 struct PartSceneNode
 {
+    uint32_t partId = 0;
     std::string name;
     vsg::ref_ptr<vsg::Switch> switchNode;
+    vsg::vec3 baseColor;
+    vsg::ref_ptr<vsg::vec3Array> faceColors;
+    std::vector<mesh::PointSpan> pointSpans;
+    std::vector<mesh::LineSpan> lineSpans;
+    std::vector<mesh::FaceSpan> faceSpans;
 };
+
+inline constexpr uint32_t InvalidPartId = std::numeric_limits<uint32_t>::max();
 
 struct AssemblySceneData
 {
@@ -33,10 +43,18 @@ struct AssemblySceneData
     std::size_t totalTriangleCount = 0;
     std::size_t totalLineSegmentCount = 0;
     std::size_t totalPointCount = 0;
+
+    uint32_t selectedPartId = InvalidPartId;
 };
 
 AssemblySceneData buildAssemblyScene(
     const cad::AssemblyData& assembly,
     const mesh::MeshOptions& meshOptions = {},
     const SceneOptions& sceneOptions = {});
+
+PartSceneNode* findPart(AssemblySceneData& sceneData, uint32_t partId);
+const PartSceneNode* findPart(const AssemblySceneData& sceneData, uint32_t partId);
+
+bool setSelectedPart(AssemblySceneData& sceneData, uint32_t partId);
+void clearSelectedPart(AssemblySceneData& sceneData);
 } // namespace vsgocct::scene

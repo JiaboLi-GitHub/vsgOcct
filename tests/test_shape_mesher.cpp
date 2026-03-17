@@ -52,6 +52,36 @@ TEST_F(ShapeMesherTest, TriangulateBoxEdges)
     EXPECT_GT(result.lineSegmentCount, 0u);
 }
 
+TEST_F(ShapeMesherTest, TriangulateBoxPrimitiveSpans)
+{
+    auto result = triangulate(boxShape);
+
+    EXPECT_EQ(result.pointSpans.size(), 8u);
+    EXPECT_EQ(result.lineSpans.size(), 12u);
+    EXPECT_EQ(result.faceSpans.size(), 6u);
+
+    std::size_t totalPoints = 0;
+    for (const auto& span : result.pointSpans)
+    {
+        totalPoints += span.pointCount;
+    }
+    EXPECT_EQ(totalPoints, result.pointCount);
+
+    std::size_t totalSegments = 0;
+    for (const auto& span : result.lineSpans)
+    {
+        totalSegments += span.segmentCount;
+    }
+    EXPECT_EQ(totalSegments, result.lineSegmentCount);
+
+    std::size_t totalTriangles = 0;
+    for (const auto& span : result.faceSpans)
+    {
+        totalTriangles += span.triangleCount;
+    }
+    EXPECT_EQ(totalTriangles, result.triangleCount);
+}
+
 TEST_F(ShapeMesherTest, TriangulateAssembly)
 {
     auto assembly = readStep(testDataPath("assembly.step"));

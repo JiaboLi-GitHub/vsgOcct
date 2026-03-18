@@ -1,4 +1,4 @@
-#include <vsgocct/StepModelLoader.h>
+#include <vsgocct/ModelLoader.h>
 #include <vsgocct/selection/ScenePicker.h>
 
 #include <QtCore/QFileInfo>
@@ -33,7 +33,7 @@ bool hasOption(const QStringList& arguments, const QString& option)
     return arguments.contains(option, Qt::CaseInsensitive);
 }
 
-QString resolveStepFile(const QStringList& arguments)
+QString resolveModelFile(const QStringList& arguments)
 {
     for (int index = 1; index < arguments.size(); ++index)
     {
@@ -50,9 +50,9 @@ QString resolveStepFile(const QStringList& arguments)
 
     return QFileDialog::getOpenFileName(
         nullptr,
-        QStringLiteral("Open STEP Model"),
+        QStringLiteral("Open 3D Model"),
         initialDirectory,
-        QStringLiteral("STEP Files (*.step *.stp *.STEP *.STP);;All Files (*.*)"));
+        QStringLiteral("3D Models (*.step *.stp *.stl *.STEP *.STP *.STL);;STEP Files (*.step *.stp);;STL Files (*.stl);;All Files (*.*)"));
 }
 
 QString partLabel(const vsgocct::scene::PartSceneNode& part, int fallbackIndex)
@@ -509,8 +509,8 @@ int main(int argc, char* argv[])
     {
         QApplication application(argc, argv);
 
-        const QString stepFile = resolveStepFile(application.arguments());
-        if (stepFile.isEmpty())
+        const QString modelFile = resolveModelFile(application.arguments());
+        if (modelFile.isEmpty())
         {
             return 0;
         }
@@ -521,15 +521,14 @@ int main(int argc, char* argv[])
                                        : vsgocct::scene::ShadingMode::Pbr;
         const QString shadingLabel = shadingModeLabel(sceneOptions.shadingMode);
 
-        auto sceneData = vsgocct::loadStepScene(
-            std::filesystem::path(stepFile.toStdWString()),
-            {},
+        auto sceneData = vsgocct::loadScene(
+            std::filesystem::path(modelFile.toStdWString()),
             sceneOptions);
         std::cout << "Loaded " << sceneData.totalPointCount << " points, "
                   << sceneData.totalLineSegmentCount << " line segments, "
                   << sceneData.totalTriangleCount << " triangles, "
                   << sceneData.parts.size() << " parts in " << shadingLabel.toStdString() << " mode from "
-                  << stepFile.toLocal8Bit().constData() << std::endl;
+                  << modelFile.toLocal8Bit().constData() << std::endl;
 
         auto viewer = vsgQt::Viewer::create();
 
@@ -554,7 +553,7 @@ int main(int argc, char* argv[])
         mainWindow.setWindowTitle(
             QStringLiteral("STEP Viewer (%1) - %2")
                 .arg(shadingLabel)
-                .arg(QFileInfo(stepFile).fileName()));
+                .arg(QFileInfo(modelFile).fileName()));
         mainWindow.setCentralWidget(centralBase);
         mainWindow.resize(static_cast<int>(traits->width), static_cast<int>(traits->height));
 

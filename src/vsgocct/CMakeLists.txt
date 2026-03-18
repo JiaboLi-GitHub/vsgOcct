@@ -1,6 +1,7 @@
 set(VSGOCCT_SOURCES
     StepModelLoader.cpp
     cad/StepReader.cpp
+    cad/StlReader.cpp
     mesh/ShapeMesher.cpp
     selection/ScenePicker.cpp
     scene/SceneBuilder.cpp
@@ -10,6 +11,7 @@ set(VSGOCCT_HEADERS
     ../../include/vsgocct/StepModelLoader.h
     ../../include/vsgocct/cad/MaterialTypes.h
     ../../include/vsgocct/cad/StepReader.h
+    ../../include/vsgocct/cad/StlReader.h
     ../../include/vsgocct/mesh/ShapeMesher.h
     ../../include/vsgocct/selection/ScenePicker.h
     ../../include/vsgocct/selection/SelectionToken.h
@@ -44,6 +46,7 @@ target_link_libraries(vsgocct
         TKXCAF
         TKMesh
         TKTopAlgo
+        TKDESTL
 )
 
 target_compile_features(vsgocct PUBLIC cxx_std_17)

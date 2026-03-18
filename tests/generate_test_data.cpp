@@ -18,6 +18,11 @@
 #include <Quantity_Color.hxx>
 #include <gp_Trsf.hxx>
 
+#include <RWStl.hxx>
+#include <Poly_Triangulation.hxx>
+#include <OSD_Path.hxx>
+#include <fstream>
+
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -171,6 +176,55 @@ int main()
 
         shapeTool->UpdateAssemblies();
         writeXdeStep(doc, dataDir / "shared_instances.step");
+    }
+
+    // cube.stl: ASCII STL cube (8 vertices, 12 triangles)
+    {
+        // Build a Poly_Triangulation for a unit cube manually
+        // Vertices of a 10x10x10 cube at origin
+        Handle(Poly_Triangulation) triangulation = new Poly_Triangulation(8, 12, false);
+        triangulation->SetNode(1, gp_Pnt(0, 0, 0));
+        triangulation->SetNode(2, gp_Pnt(10, 0, 0));
+        triangulation->SetNode(3, gp_Pnt(10, 10, 0));
+        triangulation->SetNode(4, gp_Pnt(0, 10, 0));
+        triangulation->SetNode(5, gp_Pnt(0, 0, 10));
+        triangulation->SetNode(6, gp_Pnt(10, 0, 10));
+        triangulation->SetNode(7, gp_Pnt(10, 10, 10));
+        triangulation->SetNode(8, gp_Pnt(0, 10, 10));
+
+        // 12 triangles (2 per face, CCW winding)
+        triangulation->SetTriangle(1, Poly_Triangle(1, 3, 2));  // bottom
+        triangulation->SetTriangle(2, Poly_Triangle(1, 4, 3));
+        triangulation->SetTriangle(3, Poly_Triangle(5, 6, 7));  // top
+        triangulation->SetTriangle(4, Poly_Triangle(5, 7, 8));
+        triangulation->SetTriangle(5, Poly_Triangle(1, 2, 6));  // front
+        triangulation->SetTriangle(6, Poly_Triangle(1, 6, 5));
+        triangulation->SetTriangle(7, Poly_Triangle(3, 4, 8));  // back
+        triangulation->SetTriangle(8, Poly_Triangle(3, 8, 7));
+        triangulation->SetTriangle(9, Poly_Triangle(2, 3, 7));  // right
+        triangulation->SetTriangle(10, Poly_Triangle(2, 7, 6));
+        triangulation->SetTriangle(11, Poly_Triangle(1, 5, 8)); // left
+        triangulation->SetTriangle(12, Poly_Triangle(1, 8, 4));
+
+        // Write ASCII
+        auto asciiPath = dataDir / "cube.stl";
+        OSD_Path osdAscii(asciiPath.string().c_str());
+        if (!RWStl::WriteAscii(triangulation, osdAscii))
+        {
+            std::cerr << "Failed to write: " << asciiPath << std::endl;
+            std::exit(1);
+        }
+        std::cout << "Written: " << asciiPath << std::endl;
+
+        // Write binary
+        auto binaryPath = dataDir / "cube_binary.stl";
+        OSD_Path osdBin(binaryPath.string().c_str());
+        if (!RWStl::WriteBinary(triangulation, osdBin))
+        {
+            std::cerr << "Failed to write: " << binaryPath << std::endl;
+            std::exit(1);
+        }
+        std::cout << "Written: " << binaryPath << std::endl;
     }
 
     return 0;

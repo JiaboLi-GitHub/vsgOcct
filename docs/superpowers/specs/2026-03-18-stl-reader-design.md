@@ -67,6 +67,7 @@ namespace vsgocct::mesh
 struct StlMeshOptions
 {
     double edgeAngleThreshold = 30.0;  // Degrees: dihedral angle threshold for feature edges
+    double weldTolerance = 0.0;        // 0 = auto (1e-6 × bounding box diagonal)
 };
 
 MeshResult buildStlMesh(const Handle(Poly_Triangulation)& triangulation,
@@ -76,7 +77,9 @@ MeshResult buildStlMesh(const Handle(Poly_Triangulation)& triangulation,
 
 **Feature Edge Reconstruction Algorithm**:
 
-1. **Build half-edge map**: For each triangle, create entries for its three edges keyed by `(min(v0,v1), max(v0,v1))`. Each entry stores the two adjacent face indices.
+0. **Vertex welding** (critical): STL files store per-triangle vertices independently — `RWStl::ReadFile` may not merge coincident vertices. Before edge analysis, weld vertices by spatial hashing: group vertices whose positions differ by less than `weldTolerance` (default: 1e-6 × bounding box diagonal). Build a remapping table `originalIndex → weldedIndex`. Without this step, every edge would appear as a boundary edge and the algorithm would fail.
+
+1. **Build half-edge map**: For each triangle, create entries for its three edges keyed by `(min(weldedV0, weldedV1), max(weldedV0, weldedV1))`. Each entry stores the two adjacent face indices.
 
 2. **Classify edges**:
    - **Boundary edges**: Referenced by only one triangle → always feature edges
@@ -86,16 +89,27 @@ MeshResult buildStlMesh(const Handle(Poly_Triangulation)& triangulation,
 3. **Extract feature vertices**: Endpoints of all feature edges become feature vertices (deduplicated).
 
 4. **Build MeshResult**:
-   - `facePositions` / `faceNormals`: All triangles, one `FaceSpan` per triangle (faceId = triangle index)
+   - `facePositions` / `faceNormals`: All triangles with flat (per-face) normals applied to all three vertices of each triangle. One `FaceSpan` per triangle (faceId = triangle index).
    - `linePositions`: Feature edge segments, one `LineSpan` per feature edge (edgeId = sequential)
    - `pointPositions`: Feature vertices, one `PointSpan` per vertex (vertexId = sequential)
    - `boundsMin` / `boundsMax`: Computed during face extraction
 
+**Normals**: STL provides per-face normals (not per-vertex). Each triangle's three vertices share the same face normal. This differs from the STEP pipeline where normals come from B-Rep surface evaluation.
+
 **Why per-triangle FaceSpan**: STL has no higher-level face grouping. Each triangle is independently selectable, consistent with the data format. For large models this means many spans, but the overhead is manageable since spans are lightweight (12 bytes each).
 
-### 3. SceneBuilder Refactoring
+**Highlight optimization for STL**: Since FaceSpan IDs are sequential starting from 0, the highlight function can use `faceId` as a direct array index for O(1) lookup instead of linear scan.
 
-**Existing function** `buildAssemblyScene` is refactored to expose two reusable building blocks:
+### 3. Type Decoupling + SceneBuilder Refactoring
+
+**Move shared types out of StepReader.h**: `ShapeNodeColor` and `ShapeVisualMaterial` are currently defined in `cad/StepReader.h` but are needed by both STEP and STL pipelines. Move them to a new shared header:
+
+**New file**: `include/vsgocct/cad/MaterialTypes.h`
+- Contains `ShapeNodeColor`, `ShapeVisualMaterial`, `ShapeVisualMaterialSource`
+- `StepReader.h` includes `MaterialTypes.h` instead of defining these types
+- No behavioral change, just decoupling
+
+**SceneBuilder refactoring** — expose two reusable building blocks:
 
 ```cpp
 namespace vsgocct::scene
@@ -116,7 +130,11 @@ AssemblySceneData assembleScene(
 }
 ```
 
-**Refactoring approach**: Extract the per-part rendering logic (pipeline creation, shader setup, buffer allocation, switch node construction) from the existing `buildAssemblyScene` into `buildPartScene`. The existing `buildAssemblyScene` calls these new functions internally, preserving backward compatibility.
+**Responsibility split**:
+- `buildPartScene`: Pipeline creation, shader setup, buffer allocation, switch node construction, color array initialization for a single part
+- `assembleScene`: Headlight addition, bounding sphere computation, combining all part nodes into root scene node, populating `AssemblySceneData` totals
+
+**Refactoring approach**: Extract the per-part rendering logic from the existing `buildNodeSubgraph` in `buildAssemblyScene` into `buildPartScene`. The existing `buildAssemblyScene` calls these new functions internally, preserving backward compatibility.
 
 ### 4. Unified ModelLoader
 
@@ -126,12 +144,17 @@ AssemblySceneData assembleScene(
 namespace vsgocct
 {
 // Universal entry point - dispatches by file extension
+// Uses default options for format-specific parameters
 scene::AssemblySceneData loadScene(
     const std::filesystem::path& modelFile,
+    const scene::SceneOptions& sceneOptions = {});
+
+// Explicit entry points with format-specific options
+scene::AssemblySceneData loadStepScene(
+    const std::filesystem::path& stepFile,
     const mesh::MeshOptions& meshOptions = {},
     const scene::SceneOptions& sceneOptions = {});
 
-// Explicit STL entry point
 scene::AssemblySceneData loadStlScene(
     const std::filesystem::path& stlFile,
     const mesh::StlMeshOptions& stlOptions = {},
@@ -139,18 +162,24 @@ scene::AssemblySceneData loadStlScene(
 }
 ```
 
-**Extension mapping**:
-- `.step`, `.stp` (case-insensitive) → `loadStepScene()`
-- `.stl` (case-insensitive) → `loadStlScene()`
+**Extension mapping** (case-insensitive, extension lowercased before comparison):
+- `.step`, `.stp` → `loadStepScene()` with default `MeshOptions`
+- `.stl` → `loadStlScene()` with default `StlMeshOptions`
 - Unknown extension → `std::runtime_error`
 
-**Note**: `loadStepScene()` remains unchanged and continues to work. `StepModelLoader.h` is preserved for backward compatibility but `ModelLoader.h` becomes the preferred API.
+**API design rationale**: The unified `loadScene()` uses defaults for format-specific parameters (mesh deflection for STEP, edge angle threshold for STL). Users needing fine-grained control use the format-specific `loadStepScene()` / `loadStlScene()` entry points.
+
+**Note**: `loadStepScene()` remains unchanged. `StepModelLoader.h` is preserved for backward compatibility; `ModelLoader.h` re-exports `loadStepScene` and becomes the preferred single-include API.
 
 ## Build Changes
 
 **CMake** (`src/vsgocct/CMakeLists.txt`):
 - Add new source files: `cad/StlReader.cpp`, `mesh/StlMeshBuilder.cpp`, `ModelLoader.cpp`
-- Add OCCT dependency: `TKSTL` (contains `RWStl`)
+- Add OCCT dependency: `TKSTL` (contains `RWStl`) to PRIVATE link libraries
+- Verify OCCT installation includes `TKSTL` (standard in most builds)
+
+**CMake** (`tests/CMakeLists.txt`):
+- Add `TKSTL` to `generate_test_data` link libraries (needed for `StlAPI_Writer` / `RWStl::WriteBinary`)
 
 ## Testing
 
@@ -182,6 +211,8 @@ Unlike STEP models, STL models have these inherent limitations:
 
 | File | Action |
 |------|--------|
+| `include/vsgocct/cad/MaterialTypes.h` | New (extracted from StepReader.h) |
+| `include/vsgocct/cad/StepReader.h` | Modify: include MaterialTypes.h, remove moved types |
 | `include/vsgocct/cad/StlReader.h` | New |
 | `src/vsgocct/cad/StlReader.cpp` | New |
 | `include/vsgocct/mesh/StlMeshBuilder.h` | New |

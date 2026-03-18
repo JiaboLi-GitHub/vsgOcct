@@ -26,6 +26,7 @@ vsgocct_add_test(test_scene_builder)
 vsgocct_add_test(test_scene_picker)
 vsgocct_add_test(test_stl_reader)
 vsgocct_add_test(test_stl_mesh_builder)
+vsgocct_add_test(test_model_loader)
 
 # --- generate_test_data (utility, not a test) ---
 # Links OCCT directly because it calls BRepPrimAPI and STEPControl_Writer.

@@ -8,6 +8,7 @@ set(VSGOCCT_SOURCES
 
 set(VSGOCCT_HEADERS
     ../../include/vsgocct/StepModelLoader.h
+    ../../include/vsgocct/cad/MaterialTypes.h
     ../../include/vsgocct/cad/StepReader.h
     ../../include/vsgocct/mesh/ShapeMesher.h
     ../../include/vsgocct/selection/ScenePicker.h

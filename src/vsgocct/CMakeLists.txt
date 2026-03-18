@@ -3,6 +3,7 @@ set(VSGOCCT_SOURCES
     cad/StepReader.cpp
     cad/StlReader.cpp
     mesh/ShapeMesher.cpp
+    mesh/StlMeshBuilder.cpp
     selection/ScenePicker.cpp
     scene/SceneBuilder.cpp
 )
@@ -13,6 +14,7 @@ set(VSGOCCT_HEADERS
     ../../include/vsgocct/cad/StepReader.h
     ../../include/vsgocct/cad/StlReader.h
     ../../include/vsgocct/mesh/ShapeMesher.h
+    ../../include/vsgocct/mesh/StlMeshBuilder.h
     ../../include/vsgocct/selection/ScenePicker.h
     ../../include/vsgocct/selection/SelectionToken.h
     ../../include/vsgocct/scene/SceneBuilder.h

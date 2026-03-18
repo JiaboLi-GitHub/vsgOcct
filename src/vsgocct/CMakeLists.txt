@@ -1,5 +1,5 @@
 set(VSGOCCT_SOURCES
-    StepModelLoader.cpp
+    ModelLoader.cpp
     cad/StepReader.cpp
     cad/StlReader.cpp
     mesh/ShapeMesher.cpp
@@ -9,6 +9,7 @@ set(VSGOCCT_SOURCES
 )
 
 set(VSGOCCT_HEADERS
+    ../../include/vsgocct/ModelLoader.h
     ../../include/vsgocct/StepModelLoader.h
     ../../include/vsgocct/cad/MaterialTypes.h
     ../../include/vsgocct/cad/StepReader.h

@@ -94,4 +94,16 @@ void clearHoverSelection(AssemblySceneData& sceneData);
 
 bool setSelectedPart(AssemblySceneData& sceneData, uint32_t partId);
 void clearSelectedPart(AssemblySceneData& sceneData);
+
+PartSceneNode buildPartScene(
+    uint32_t partId,
+    const std::string& name,
+    const mesh::MeshResult& mesh,
+    const cad::ShapeNodeColor& color,
+    const cad::ShapeVisualMaterial& material,
+    const SceneOptions& sceneOptions);
+
+AssemblySceneData assembleScene(
+    std::vector<PartSceneNode>&& parts,
+    const SceneOptions& sceneOptions);
 } // namespace vsgocct::scene

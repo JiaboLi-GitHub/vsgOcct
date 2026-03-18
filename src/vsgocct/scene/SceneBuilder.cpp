@@ -727,21 +727,48 @@ void buildNodeSubgraph(
     TopoDS_Shape locatedShape = shapeNode.shape.Located(currentLocation);
     auto meshResult = mesh::triangulate(locatedShape, meshOptions);
 
-    const auto faceColor = resolveBaseColor(shapeNode.visualMaterial);
+    auto partSceneNode = buildPartScene(
+        partId, shapeNode.name, meshResult,
+        shapeNode.color, shapeNode.visualMaterial, sceneOptions);
+
+    parentGroup->addChild(partSceneNode.switchNode);
+
+    totalTriangles += meshResult.triangleCount;
+    totalLines += meshResult.lineSegmentCount;
+    totalPoints += meshResult.pointCount;
+
+    if (meshResult.hasGeometry())
+    {
+        bounds.expand(meshResult.boundsMin, meshResult.boundsMax);
+    }
+
+    parts.push_back(std::move(partSceneNode));
+}
+} // namespace
+
+PartSceneNode buildPartScene(
+    uint32_t partId,
+    const std::string& name,
+    const mesh::MeshResult& mesh,
+    const cad::ShapeNodeColor& color,
+    const cad::ShapeVisualMaterial& material,
+    const SceneOptions& sceneOptions)
+{
+    const auto faceColor = resolveBaseColor(material);
     const auto faceNode = sceneOptions.shadingMode == ShadingMode::Pbr
                               ? createPbrFaceNode(
-                                    meshResult.facePositions,
-                                    meshResult.faceNormals,
-                                    shapeNode.visualMaterial,
+                                    mesh.facePositions,
+                                    mesh.faceNormals,
+                                    material,
                                     faceColor,
                                     partId)
                               : createLegacyFaceNode(
-                                    meshResult.facePositions,
-                                    meshResult.faceNormals,
+                                    mesh.facePositions,
+                                    mesh.faceNormals,
                                     faceColor,
                                     partId);
     auto lineNode = createPositionOnlyNode(
-        meshResult.linePositions,
+        mesh.linePositions,
         createPrimitivePipeline(
             LINE_VERT_SHADER,
             LINE_FRAG_SHADER,
@@ -753,7 +780,7 @@ void buildNodeSubgraph(
         partId,
         selection::PrimitiveKind::Edge);
     auto pointNode = createPositionOnlyNode(
-        meshResult.pointPositions,
+        mesh.pointPositions,
         createPrimitivePipeline(
             POINT_VERT_SHADER,
             POINT_FRAG_SHADER,
@@ -774,34 +801,82 @@ void buildNodeSubgraph(
     auto partSwitch = vsg::Switch::create();
     partSwitch->setValue(PART_ID_KEY, partId);
     partSwitch->addChild(true, partGroup);
-    parentGroup->addChild(partSwitch);
 
     PartSceneNode partSceneNode;
     partSceneNode.partId = partId;
-    partSceneNode.name = shapeNode.name;
+    partSceneNode.name = name;
     partSceneNode.switchNode = partSwitch;
     partSceneNode.baseColor = faceColor;
-    partSceneNode.importedMaterial = shapeNode.visualMaterial;
-    partSceneNode.visualMaterial = shapeNode.visualMaterial;
+    partSceneNode.importedMaterial = material;
+    partSceneNode.visualMaterial = material;
     partSceneNode.pbrMaterialValue = faceNode.materialValue;
     partSceneNode.faceColors = faceNode.colors;
     partSceneNode.lineColors = lineNode.colors;
     partSceneNode.pointColors = pointNode.colors;
-    partSceneNode.pointSpans = std::move(meshResult.pointSpans);
-    partSceneNode.lineSpans = std::move(meshResult.lineSpans);
-    partSceneNode.faceSpans = std::move(meshResult.faceSpans);
-    parts.push_back(std::move(partSceneNode));
-
-    totalTriangles += meshResult.triangleCount;
-    totalLines += meshResult.lineSegmentCount;
-    totalPoints += meshResult.pointCount;
-
-    if (meshResult.hasGeometry())
-    {
-        bounds.expand(meshResult.boundsMin, meshResult.boundsMax);
-    }
+    partSceneNode.pointSpans = mesh.pointSpans;
+    partSceneNode.lineSpans = mesh.lineSpans;
+    partSceneNode.faceSpans = mesh.faceSpans;
+    return partSceneNode;
 }
-} // namespace
+
+AssemblySceneData assembleScene(
+    std::vector<PartSceneNode>&& parts,
+    const SceneOptions& sceneOptions)
+{
+    auto root = vsg::Group::create();
+    if (sceneOptions.shadingMode == ShadingMode::Pbr && sceneOptions.addHeadlight)
+    {
+        root->addChild(vsg::createHeadlight());
+    }
+
+    std::size_t totalTriangles = 0;
+    std::size_t totalLines = 0;
+    std::size_t totalPoints = 0;
+
+    for (auto& part : parts)
+    {
+        root->addChild(part.switchNode);
+    }
+
+    AssemblySceneData sceneData;
+    sceneData.scene = root;
+    sceneData.shadingMode = sceneOptions.shadingMode;
+    sceneData.materialPreset = MaterialPreset::Imported;
+
+    // Compute bounds from all part switch nodes using VSG's ComputeBounds visitor
+    auto computeBounds = vsg::ComputeBounds::create();
+    root->accept(*computeBounds);
+    if (computeBounds->bounds.valid())
+    {
+        const auto& bb = computeBounds->bounds;
+        sceneData.center = (bb.min + bb.max) * 0.5;
+        sceneData.radius = vsg::length(bb.max - bb.min) * 0.5;
+        sceneData.radius = std::max(sceneData.radius, 1.0);
+    }
+
+    for (const auto& part : parts)
+    {
+        for (const auto& span : part.faceSpans)
+        {
+            totalTriangles += span.triangleCount;
+        }
+        for (const auto& span : part.lineSpans)
+        {
+            totalLines += span.segmentCount;
+        }
+        for (const auto& span : part.pointSpans)
+        {
+            totalPoints += span.pointCount;
+        }
+    }
+
+    sceneData.totalTriangleCount = totalTriangles;
+    sceneData.totalLineSegmentCount = totalLines;
+    sceneData.totalPointCount = totalPoints;
+    sceneData.parts = std::move(parts);
+
+    return sceneData;
+}
 
 AssemblySceneData buildAssemblyScene(
     const cad::AssemblyData& assembly,
